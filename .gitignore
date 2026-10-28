@@ -6,6 +6,7 @@ android/quest_teleop/.gradle/
 android/quest_teleop/local.properties
 android/quest_teleop/**/build/
 android/quest_teleop/**/*.apk
+android/quest_teleop/app/.cxx/
 .vscode/
 .env
 src/third_party/osqp_0_6_3/
