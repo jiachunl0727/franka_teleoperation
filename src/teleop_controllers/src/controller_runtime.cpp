@@ -22,6 +22,7 @@
 #include <stdexcept>
 #include <thread>
 
+#include "safety_filter/async_safety.hpp"
 #include "safety_filter/handoff.hpp"
 #include "safety_filter/legacy_pose.hpp"
 #include "safety_filter/panda_model_fixture.hpp"
@@ -47,6 +48,7 @@ struct Telemetry {
   franka::RobotState native;
   sf::cbf::ArmState model;
   sf::SafetyReply safety;
+  sf::AsyncSafetyOutput local_safety;
   ft::Vector7 gravity{ft::Vector7::Zero()};
   bool finish_requested{false};
   uint64_t stamp_ns{0}, cycle{0};
@@ -78,7 +80,8 @@ T parameter(const std::shared_ptr<rclcpp::Node>& node, const std::string& name, 
   return node->declare_parameter<T>(name, value);
 }
 int run_arm(const std::shared_ptr<rclcpp::Node>& node, int arm, sf::SafetyCoordinator& coordinator,
-            const sf::cbf::SafetyParameters& safety_parameters, std::atomic<unsigned>& prepared,
+            const sf::cbf::SafetyParameters& safety_parameters,
+            const std::array<sf::cbf::ArmIdentity, 2>& identities, std::atomic<unsigned>& prepared,
             std::atomic<unsigned>& connected, unsigned count, OwnerTiming& timing) {
   int result = 0;
   bool owner_fault = false;
@@ -106,6 +109,23 @@ int run_arm(const std::shared_ptr<rclcpp::Node>& node, int arm, sf::SafetyCoordi
     impedance.lambda_rotation = parameter(node, "lambda_rotation", impedance.lambda_rotation);
     impedance.gain_translation = parameter(node, "gain_translation", impedance.gain_translation);
     impedance.gain_rotation = parameter(node, "gain_rotation", impedance.gain_rotation);
+    impedance.nullspace_enabled = parameter(node, "nullspace_enabled", true);
+    const auto home = parameter<std::vector<double>>(
+        node, "home_joint_position", std::vector<double>(sf::kHome.begin(), sf::kHome.end()));
+    if (home.size() != 7)
+      throw std::invalid_argument("home_joint_position requires seven values");
+    impedance.home_joint_position = Eigen::Map<const ft::Vector7>(home.data());
+    impedance.nullspace_stiffness =
+        parameter(node, "nullspace_stiffness", impedance.nullspace_stiffness);
+    impedance.nullspace_damping = parameter(node, "nullspace_damping", impedance.nullspace_damping);
+    impedance.nullspace_joint_limit_gain =
+        parameter(node, "nullspace_joint_limit_gain", impedance.nullspace_joint_limit_gain);
+    impedance.nullspace_joint_limit_margin =
+        parameter(node, "nullspace_joint_limit_margin", impedance.nullspace_joint_limit_margin);
+    impedance.nullspace_max_torque =
+        parameter(node, "nullspace_max_torque", impedance.nullspace_max_torque);
+    impedance.nullspace_ramp_seconds =
+        parameter(node, "nullspace_ramp_seconds", impedance.nullspace_ramp_seconds);
     const double timeout = parameter(node, "command_timeout_ms", 100.0);
     const double uncertainty = parameter(node, "max_clock_uncertainty_ms", 10.0);
     const double future = parameter(node, "max_source_future_ms", 10.0);
@@ -137,6 +157,7 @@ int run_arm(const std::shared_ptr<rclcpp::Node>& node, int arm, sf::SafetyCoordi
     p.torque_limits = p.torque_limits.cwiseMin(safety_parameters.maximum_joint_torque);
     p.torque_rate = std::min(p.torque_rate, safety_parameters.maximum_torque_rate);
     ft::HomingParameters hp;
+    hp.home_joint_position = impedance.home_joint_position;
     hp.speed_factor = parameter(node, "homing_speed_factor", hp.speed_factor);
     hp.completion_timeout = parameter(node, "homing_timeout_seconds", hp.completion_timeout);
     hp.stop_duration = parameter(node, "homing_stop_duration_seconds", hp.stop_duration);
@@ -175,6 +196,18 @@ int run_arm(const std::shared_ptr<rclcpp::Node>& node, int arm, sf::SafetyCoordi
     ft::PositionHoldController position_hold(hold);
     ft::DampingController damping(impedance.gain_translation, impedance.gain_rotation);
     ft::ControllerManager manager(p, hp, cartesian, orientation_only, position_hold, damping);
+    const bool asynchronous = coordinator.limits().asynchronous || !safety_parameters.enabled;
+    sf::AsyncSafetyController local_safety;
+    std::string local_error;
+    if (!local_safety.configure(arm, coordinator.limits(), safety_parameters, identities,
+                                &local_error))
+      throw std::invalid_argument(local_error);
+    sf::ModelRequest peer_request;
+    bool have_peer_request = false;
+    uint64_t control_epoch = 1, previous_generation = 0, previous_home_request = 0;
+    int previous_kind = -1;
+    std::array<char, 65> previous_session{};
+
     const bool homing_enabled = parameter<bool>(node, "homing_enabled", true);
     sf::SpscQueue<ft::HomingInput> home_inputs;
     sf::SpscQueue<ft::Command> commands;
@@ -419,10 +452,23 @@ int run_arm(const std::shared_ptr<rclcpp::Node>& node, int arm, sf::SafetyCoordi
           quest_teleop_interfaces::msg::CbfStatus safety;
           safety.header = pose.header;
           safety.hardware_backend = hardware;
+          safety.execution = asynchronous ? "asynchronous" : "synchronous";
+          safety.worker_status = sample.local_safety.worker_status;
+          safety.fallback_reason = sample.local_safety.reason;
+          safety.worker_age_ms = sample.local_safety.worker_age_ns / 1e6;
+          safety.worker_source_cycle = sample.local_safety.worker_cycles;
+          safety.worker_result_usable = sample.local_safety.worker_usable;
+          safety.peer_state_usable = sample.local_safety.peer_usable;
+          safety.braking_hold_active = sample.local_safety.degraded;
+          safety.hold_settled = sample.local_safety.holding;
+          safety.model_reused = sample.local_safety.model_reused;
+          safety.mandatory_table_guard_enabled = true;
+
           const auto& filtered = sample.safety.result;
           safety.solver_succeeded = filtered.solver_succeeded;
           safety.fallback_active = filtered.fallback_active;
           safety.fatal_input_fault = filtered.fatal_input_fault;
+          safety.fatal_solver_fault = filtered.fatal_solver_fault;
           safety.solver_status = filtered.solver_status;
           safety.stop_reason = sf::safety_stop_name(coordinator.stopped());
           safety.control_cycle = sample.cycle;
@@ -435,6 +481,9 @@ int run_arm(const std::shared_ptr<rclcpp::Node>& node, int arm, sf::SafetyCoordi
           safety.filter_time_seconds = filtered.filter_time_seconds;
           safety.solver_time_seconds = filtered.solver_time_seconds;
           safety.maximum_constraint_violation = filtered.maximum_constraint_violation;
+          safety.manipulability = filtered.manipulability;
+          safety.singularity_constraints = filtered.singularity_constraints;
+          safety.singularity_state_invalid = filtered.singularity_state_invalid;
           safety.minimum_table_clearance = filtered.minimum_table_clearance;
           safety.minimum_self_clearance = filtered.minimum_self_clearance;
           safety.minimum_inter_arm_clearance = filtered.minimum_inter_arm_clearance;
@@ -551,6 +600,24 @@ int run_arm(const std::shared_ptr<rclcpp::Node>& node, int arm, sf::SafetyCoordi
       // input cannot appear to arrive in the future. Keep the original model
       // timestamp for CBF age/deadline checks.
       const auto input_check_ns = monotonic_ns();
+
+      telemetry.model.q = telemetry.state.q;
+      telemetry.model.dq = telemetry.state.dq;
+      telemetry.model.coriolis = telemetry.state.coriolis;
+      telemetry.model.previous_torque = telemetry.state.previous_torque;
+      if (asynchronous) {
+        if (!local_safety.prepare_model(telemetry.model, telemetry.stamp_ns)) {
+          coordinator.stop(sf::SafetyStop::invalid_model);
+          throw std::runtime_error("essential feedback invalid or model grace expired");
+        }
+        telemetry.state.mass = telemetry.model.mass;
+        telemetry.state.coriolis = telemetry.model.coriolis;
+        if (local_safety.model_reused()) {
+          telemetry.state.jacobian = telemetry.model.frame_jacobian[8];
+          telemetry.state.position = telemetry.model.frame_pose[8].translation();
+          telemetry.state.orientation = Eigen::Quaterniond(telemetry.model.frame_pose[8].linear());
+        }
+      }
       const auto managed = manager.update(telemetry.state, input_check_ns, period);
       telemetry.homing = managed.homing;
       telemetry.output = managed.control;
@@ -577,6 +644,20 @@ int run_arm(const std::shared_ptr<rclcpp::Node>& node, int arm, sf::SafetyCoordi
       // inter-arm priority; joint position holding remains parked. All sources
       // still pass through the same complete safety filter.
       request.motion_active = telemetry.output.motion_enabled || telemetry.homing.active;
+      const auto& context = manager.requested_command();
+      const int kind = static_cast<int>(telemetry.output.reason);
+      if (kind != previous_kind || context.session != previous_session ||
+          context.generation != previous_generation ||
+          telemetry.homing.request_id != previous_home_request) {
+        ++control_epoch;
+        previous_kind = kind;
+        previous_session = context.session;
+        previous_generation = context.generation;
+        previous_home_request = telemetry.homing.request_id;
+      }
+      request.epoch = control_epoch;
+      request.release_source_ns = manager.release_source_ns();
+
       if (!running.load(std::memory_order_acquire))
         shutdown_seconds += period;
       // Homing completion is a mode transition, never a connection finish.
@@ -587,27 +668,51 @@ int run_arm(const std::shared_ptr<rclcpp::Node>& node, int arm, sf::SafetyCoordi
       coordinator.submit(arm, request);
       sf::SafetyReply reply;
       bool accepted = false;
-      while (coordinator.stopped() == sf::SafetyStop::none) {
-        const auto now = monotonic_ns();
-        if (coordinator.receive(arm, reply) &&
-            coordinator.accepts(arm, telemetry.cycle, telemetry.stamp_ns, monotonic_ns(), reply)) {
-          accepted = true;
-          break;
+      if (asynchronous) {
+        sf::ModelRequest incoming_peer;
+        if (coordinator.peer(arm, incoming_peer)) {
+          peer_request = incoming_peer;
+          have_peer_request = true;
         }
-        if (now < telemetry.stamp_ns ||
-            now - telemetry.stamp_ns > coordinator.limits().result_deadline_ns) {
-          coordinator.stop(sf::SafetyStop::result_deadline);
-          break;
+        sf::SafetyReply incoming;
+        const bool received = coordinator.receive(arm, incoming);
+        telemetry.local_safety =
+            local_safety.update(request, have_peer_request ? &peer_request : nullptr,
+                                received ? &incoming : nullptr, monotonic_ns());
+        reply = telemetry.local_safety.reply;
+        reply.finish = coordinator.may_finish();
+        if (reply.result.fatal_input_fault)
+          coordinator.stop(sf::SafetyStop::invalid_model);
+        if (reply.result.fatal_solver_fault)
+          coordinator.stop(sf::SafetyStop::solver_failures);
+        accepted = coordinator.stopped() == sf::SafetyStop::none;
+        if (telemetry.local_safety.entered_degraded)
+          manager.safety_fallback();
+      } else {
+        while (coordinator.stopped() == sf::SafetyStop::none) {
+          const auto now = monotonic_ns();
+          if (coordinator.receive(arm, reply) &&
+              coordinator.accepts(arm, telemetry.cycle, telemetry.stamp_ns, monotonic_ns(),
+                                  reply)) {
+            accepted = true;
+            break;
+          }
+          if (now < telemetry.stamp_ns ||
+              now - telemetry.stamp_ns > coordinator.limits().result_deadline_ns) {
+            coordinator.stop(sf::SafetyStop::result_deadline);
+            break;
+          }
+          // A short bounded sleep lets the equal-priority coordinator run even on
+          // one CPU. No unbounded lock/spin or previous-cycle torque is consumed.
+          std::this_thread::sleep_for(std::chrono::microseconds(25));
         }
-        // A short bounded sleep lets the equal-priority coordinator run even on
-        // one CPU. No unbounded lock/spin or previous-cycle torque is consumed.
-        std::this_thread::sleep_for(std::chrono::microseconds(25));
       }
       timing.finished_ns = monotonic_ns();
       timing.accepted = accepted;
       if (!accepted || coordinator.stopped() != sf::SafetyStop::none)
-        throw std::runtime_error(std::string("latched CBF stop: ") +
-                                 sf::safety_stop_name(coordinator.stopped()));
+        throw std::runtime_error(
+            std::string("latched CBF stop: ") + sf::safety_stop_name(coordinator.stopped()) +
+            (asynchronous ? std::string("; local guard: ") + reply.result.solver_status : ""));
       telemetry.safety = reply;
       telemetry.output.torque = reply.result.safe_torque.segment<7>(arm * 7);
       // Report actuator pressure against the limits used by the final filter
@@ -619,7 +724,8 @@ int run_arm(const std::shared_ptr<rclcpp::Node>& node, int arm, sf::SafetyCoordi
           (telemetry.output.nominal.array().abs() > safety_parameters.maximum_joint_torque.array())
               .any();
       if (reply.result.fallback_active) {
-        manager.safety_fallback();
+        if (!asynchronous)
+          manager.safety_fallback();
         telemetry.output.motion_enabled = false;
         telemetry.output.reason = ft::Reason::safety_filter;
         telemetry.output.position_hold_active = false;
@@ -714,6 +820,7 @@ int run_arm(const std::shared_ptr<rclcpp::Node>& node, int arm, sf::SafetyCoordi
               sample.state.coriolis = Eigen::Map<const ft::Vector7>(c.data());
               const auto mass = model.mass(state);
               sample.model.mass = Eigen::Map<const sf::cbf::Matrix7d>(mass.data());
+              sample.state.mass = sample.model.mass;
               for (int frame_index = 0; frame_index < sf::cbf::kModelFrames; ++frame_index) {
                 const auto model_frame = static_cast<franka::Frame>(frame_index);
                 const auto transform = model.pose(model_frame, state);
@@ -843,6 +950,35 @@ int main(int argc, char* argv[]) {
     std::array<sf::cbf::ArmIdentity, 2> ids;
     sf::cbf::SafetyParameters safety;
     sf::CoordinatorParameters limits;
+    const auto execution = parameter<std::string>(root, "cbf.execution", "asynchronous");
+    if (execution != "asynchronous" && execution != "synchronous")
+      throw std::invalid_argument("cbf.execution must be asynchronous or synchronous");
+    limits.asynchronous = execution == "asynchronous";
+    const auto milliseconds = [&](const std::string& key, uint64_t fallback) {
+      const double value = parameter(root, "cbf." + key, fallback / 1e6);
+      if (!std::isfinite(value) || value <= 0 || value > 1000)
+        throw std::invalid_argument("invalid cbf timing parameter: " + key);
+      return static_cast<uint64_t>(value * 1e6);
+    };
+    limits.worker_period_ns = milliseconds("worker_period_ms", limits.worker_period_ns);
+    limits.maximum_result_age_ns =
+        milliseconds("maximum_result_age_ms", limits.maximum_result_age_ns);
+    limits.maximum_worker_state_age_ns =
+        milliseconds("maximum_worker_state_age_ms", limits.maximum_worker_state_age_ns);
+    limits.maximum_peer_age_ns = milliseconds("maximum_peer_age_ms", limits.maximum_peer_age_ns);
+    limits.maximum_skew_ns = milliseconds("maximum_worker_skew_ms", 5000000);
+    limits.maximum_age_ns = std::max(limits.maximum_age_ns, limits.maximum_skew_ns);
+    limits.recovery_dwell_ns = milliseconds("recovery_dwell_ms", limits.recovery_dwell_ns);
+    limits.model_grace_ns = milliseconds("model_grace_ms", limits.model_grace_ns);
+    limits.braking_acceleration =
+        parameter(root, "cbf.braking_acceleration", limits.braking_acceleration);
+    limits.hold_stiffness = parameter(root, "cbf.fallback_hold_stiffness", limits.hold_stiffness);
+    limits.hold_damping = parameter(root, "cbf.fallback_hold_damping", limits.hold_damping);
+    limits.clearance_reserve =
+        parameter(root, "cbf.guard_clearance_reserve", limits.clearance_reserve);
+    limits.peer_motion_bound =
+        parameter(root, "cbf.peer_motion_bound_mps", limits.peer_motion_bound);
+
     sf::ActuatorLimitScales scales;
     const auto& parameter_overrides =
         root->get_node_parameters_interface()->get_parameter_overrides();
@@ -861,8 +997,8 @@ int main(int argc, char* argv[]) {
     if (!safety.enabled)
       RCLCPP_WARN(
           root->get_logger(),
-          "CBF constraints and QP disabled for diagnostic operation; torque magnitude/rate, input "
-          "gates, model validity and realtime deadlines remain enforced");
+          "Optional CBF constraints and QP disabled; mandatory world-table guard, actuator bounds, "
+          "input gates and model validation remain active");
     limits.active = safety.active_arms = {true, mode == "dual"};
     const int count = mode == "dual" ? 2 : 1;
     std::vector<std::string> ips, namespaces, frames;
@@ -911,8 +1047,16 @@ int main(int argc, char* argv[]) {
                {"controller_state_topic", "/quest_usb_bridge/" + id + "/controller_state"}})
         overrides.emplace_back(entry.first,
                                parameter<std::string>(root, prefix + entry.first, entry.second));
+      overrides.emplace_back("nullspace_enabled",
+                             parameter(root, prefix + "nullspace_enabled", true));
       for (const auto& entry :
-           std::vector<std::pair<std::string, double>>{{"lambda_translation", 50},
+           std::vector<std::pair<std::string, double>>{{"nullspace_stiffness", 10.0},
+                                                       {"nullspace_damping", 6.324555320336759},
+                                                       {"nullspace_joint_limit_gain", 2.0},
+                                                       {"nullspace_joint_limit_margin", .35},
+                                                       {"nullspace_max_torque", 5.0},
+                                                       {"nullspace_ramp_seconds", .25},
+                                                       {"lambda_translation", 50},
                                                        {"lambda_rotation", 40},
                                                        {"gain_translation", 20},
                                                        {"gain_rotation", 2.5},
@@ -935,6 +1079,7 @@ int main(int argc, char* argv[]) {
           safety.maximum_torque_rate = std::min(safety.maximum_torque_rate, value);
       }
       for (const auto& entry : std::vector<std::pair<std::string, std::vector<double>>>{
+               {"home_joint_position", std::vector<double>(sf::kHome.begin(), sf::kHome.end())},
                {"envelope_center", {0, 0, .333}},
                {"torque_limits", {87, 87, 87, 87, 12, 12, 12}},
                {"homing_stiffness", {300, 300, 300, 300, 120, 100, 50}},
@@ -968,6 +1113,13 @@ int main(int argc, char* argv[]) {
                     << "] maximum_torque_rate_Nm_s=" << safety.maximum_torque_rate
                     << " (enforced with CBF enabled or disabled)";
     RCLCPP_INFO(root->get_logger(), "%s", actuator_limits.str().c_str());
+    safety.singularity_enabled = parameter(root, "cbf.singularity_enabled", true);
+    safety.singularity_minimum_manipulability = parameter(
+        root, "cbf.singularity_minimum_manipulability", safety.singularity_minimum_manipulability);
+    safety.singularity_characteristic_length = parameter(
+        root, "cbf.singularity_characteristic_length", safety.singularity_characteristic_length);
+    safety.singularity_cbf_frequency =
+        parameter(root, "cbf.singularity_cbf_frequency", safety.singularity_cbf_frequency);
     safety.table_height = parameter(root, "cbf.table_height", safety.table_height);
     safety.table_minimum_clearance =
         parameter(root, "cbf.table_minimum_clearance", safety.table_minimum_clearance);
@@ -997,13 +1149,14 @@ int main(int argc, char* argv[]) {
       throw std::invalid_argument(error);
     if (count == 2 && !safety.enabled)
       RCLCPP_INFO(root->get_logger(),
-                  "Dual actuator-only filtering uses independent current-cycle arm lanes; "
-                  "shared stop and finish arbitration remain enforced");
+                  "Dual local actuator/table guards run independently; shared stop and finish "
+                  "arbitration remain enforced");
     std::atomic<bool> coordinating{true}, ready{false};
     std::thread coordinator_thread([&] {
       if (hardware) {
         sched_param scheduling{};
-        scheduling.sched_priority = sched_get_priority_max(SCHED_FIFO);
+        scheduling.sched_priority =
+            sched_get_priority_max(SCHED_FIFO) - (limits.asynchronous ? 1 : 0);
         if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &scheduling) != 0 ||
             mlockall(MCL_CURRENT | MCL_FUTURE) != 0)
           coordinator.stop(sf::SafetyStop::scheduling);
@@ -1011,7 +1164,7 @@ int main(int argc, char* argv[]) {
       ready.store(true, std::memory_order_release);
       while (coordinating.load(std::memory_order_acquire)) {
         coordinator.pump();
-        std::this_thread::sleep_for(std::chrono::microseconds(25));
+        std::this_thread::sleep_for(std::chrono::microseconds(limits.asynchronous ? 250 : 25));
       }
     });
     while (!ready.load(std::memory_order_acquire))
@@ -1026,8 +1179,8 @@ int main(int argc, char* argv[]) {
             "CBF coordinator requires real-time scheduling and memory locking");
       for (int i = 0; i < count; ++i)
         owners[i] = std::thread([&, i] {
-          results[i] =
-              run_arm(nodes[i], i, coordinator, safety, prepared, connected, count, timings[i]);
+          results[i] = run_arm(nodes[i], i, coordinator, safety, ids, prepared, connected, count,
+                               timings[i]);
         });
       for (int i = 0; i < count; ++i)
         owners[i].join();

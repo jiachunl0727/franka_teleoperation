@@ -59,6 +59,8 @@ void test_deadman() {
   f.right_input.trigger = 1.0f; update(); assert(d.armed);
   d.update(f, true, true, true); assert(!d.armed && d.require_release);
   assert(unit_input(std::numeric_limits<float>::quiet_NaN()) == 0.0f);
+  assert(signed_input(std::numeric_limits<float>::quiet_NaN()) == 0.0f);
+  assert(signed_input(-0.5f) == -0.5f);
 }
 
 int main() {
@@ -84,6 +86,11 @@ int main() {
   frame.right_input.secondary = false;
   frame.right_input.secondary_active = false;
   frame.right_input.trigger = 0.9f;
+  frame.left_input.thumb_x = .6f;
+  frame.left_input.thumb_y = -.25f;
+  frame.right_input.thumb_x = -.8f;
+  frame.right_input.thumb_y = .1f;
+  frame.left_input.thumb_active = frame.right_input.thumb_active = true;
   for (int i = 0; i < 180; ++i) {
     frame.acquisition_time_ns = monotonic_time_ns();
     frame.xr_time_ns = static_cast<int64_t>(frame.acquisition_time_ns + 10'000'000);

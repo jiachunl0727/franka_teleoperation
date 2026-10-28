@@ -2,9 +2,10 @@
 
 Current implementation: separated runtime/manager/torque laws, persistent local
 joint position hold, shared CBF-independent actuator caps, homing, Hand control,
-recording, full-cycle tracking telemetry and MATLAB report tools. The owner
-still waits for the current cycle's safety reply; asynchronous reuse remains
-planned in [MILESTONE_2.md](MILESTONE_2.md). Optional pose/velocity filtering and
+recording, full-cycle tracking telemetry and MATLAB report tools. The default
+safety path uses an asynchronous CBF worker with
+current-state local verification and braking/holding fallback. See
+[CBF_PANDA.md](CBF_PANDA.md). Optional pose/velocity filtering and
 interpolation are implemented in the mapper and disabled/enabled per arm.
 
 Use the [documentation guide](README.md) for current operating instructions.
@@ -13,6 +14,205 @@ descriptions of release behavior do not override the current implementation.
 Physical FCI/device operations remain operator actions.
 
 ## Stages and evidence
+
+### Exact CBF placement illustrations (2026-10-28)
+
+- Added `scripts/illustrate_cbf_geometry.py`, a robot-free documentation tool
+  reading the current C++ capsules, pinned URDF collision/visual geometry and
+  saved common home joints. It verifies all 14 capsule definitions against
+  URDF primitives at zero added safety distance and renders original visual
+  meshes, capsules, stored centerline AABBs and wrist/flange/hand details.
+- Generated PNG/PDF figures, a local-definition table and full-precision
+  endpoint/bounds CSV/JSON under `docs/figures/cbf_geometry/`. Figures explicitly
+  distinguish stored centerline boxes from explanatory radius-expanded boxes,
+  use identity world-from-base, and omit finger visual meshes. Exported segment
+  lengths/bounds were numerically checked; both PNGs were visually inspected.
+  No controller, collision policy or runtime configuration changes.
+
+### Collision geometry and active-row optimization (2026-10-27)
+
+- Disabled collision families/inactive arms skip transforms and pair distances;
+  table-only guards transform 12 required capsules per active arm. Disabled
+  minimum-clearance diagnostics use the existing `1e9` unevaluated sentinel.
+- Added conservative per-evaluation AABB pruning of far self/inter-arm/obstacle
+  pairs, including all padding/uncertainty reserves. A pair is skipped only if
+  it cannot activate a row or lower the current exact minimum diagnostic.
+  Approaching pairs automatically return; deactivation resets derivative history.
+  Retained SRDF exclusions and the existing fixed base/base exclusion, without
+  adding heuristic permanent exclusions for moving links.
+- Current feasibility checks, peer elimination and local repair iterate active
+  rows using preallocated storage. Added internal geometry-work counters and
+  focused tests for disabled families, either single-arm slot, mandatory table,
+  distant-pair pruning, re-entry, obstacle activation and zero heap allocation.
+- Before/after comparison against the saved previous library matched all 2,688
+  worker/local evaluations exactly, including enabled clearance minima, active
+  constraint counts, torques, residuals and fault/fallback outcomes. Fixtures
+  exercise different poses, base separations/rotations, arm masks, feature
+  combinations and local/peer reserves. Log:
+  `/tmp/teleop_geometry_comparison.log`; comparison scripts/source:
+  `/tmp/teleop_joystick_humble/compare-geometry.{sh,cpp}`.
+- Validation: isolated ROS Humble Docker build of safety and controllers; all
+  108 relevant leaf tests pass (47 safety/coordinator, 61 controllers), zero
+  errors/skips. The first new obstacle fixture was outside the activation band;
+  its radius was corrected and all safety tests rerun. Logs:
+  `/tmp/teleop_geometry_validation.log`, `/tmp/teleop_geometry_verified.log`.
+  Formatting and diff checks pass. Scripts are under
+  `/tmp/teleop_joystick_humble/{validate,recheck}-geometry.sh`.
+- Before/after local-layer benchmark, 4,000 evaluations per case in the same
+  isolated container (mean microseconds): full CBF single 49.1 -> 28.3, full CBF
+  dual 85.3 -> 69.3, dual with infeasible optional obstacle 198.1 -> 144.6,
+  optional CBF off single 38.6 -> 16.0 and off dual owner 38.8 -> 16.0. Corresponding
+  p99 values: 70.5 -> 48.9, 119.0 -> 85.1, 257.0 -> 167.7, 43.1 -> 20.9,
+  47.0 -> 20.8 us. No mandatory-guard fault in either version. This includes
+  model validation/local checks and repair, excludes model acquisition/nominal
+  torque/background QP, and is not a hardware timing guarantee. Results/source:
+  `/tmp/teleop_joystick_humble/geometry-benchmark.txt`,
+  `/tmp/teleop_joystick_humble/benchmark-geometry.{sh,cpp}`.
+- No physical robot/device operations or saved configuration changes. Validation
+  used the isolated `/checks` overlay; rebuild the normal overlay before use.
+
+### Asynchronous single/dual safety and mandatory world table (2026-10-27)
+
+- Replaced default per-cycle safety waits with latest-only worker requests/results
+  and per-owner current-state guards. The worker has a 5 ms default cadence and
+  lower FIFO priority than the FCI owner. Source timestamps, mode/session epochs,
+  source-state change bounds and current actuator/constraint checks gate reuse;
+  old completions never acquire a fresh source timestamp. Worker derivative
+  intervals use consumed source timestamps instead of a fixed millisecond.
+- Dual owners exchange independent peer snapshots. The background QP remains
+  coupled; local checks eliminate peer torque over a bounded actuator interval
+  and add a peer-age displacement reserve to inter-arm geometry. Missing/stale
+  peer data inhibits tracking and transitions to braking/holding without waiting.
+- Ordinary worker failure, stale output and local secondary infeasibility select
+  a bounded braking/joint-hold command instead of ending FCI. Mode warmup does
+  not immediately disarm every engagement. Fresh post-fault trigger release and
+  re-engagement plus a healthy dwell are required to resume. No retreat waypoints.
+- Callback-side guards allocate no solver and call no OSQP. They first verify
+  the current nominal-plus-worker correction, then use at most 12 constraint
+  repair sweeps on the braking candidate. Mandatory actuator/world-table rows
+  take precedence over conflicting secondary rows. A relaxed result remains
+  explicitly degraded, reports residuals, and is not claimed geometrically safe.
+- The world table plane is enforced for modeled links/Hand at every height even
+  with optional CBF disabled. Mounting geometry below logical link 2 remains
+  excluded. Model-only glitches have bounded grace without refreshing the last
+  good model timestamp; invalid essential joint feedback still stops ownership.
+- Added package/combined configuration, async age/worker/fallback/peer/model
+  diagnostics and robot-free timing/fault tests. Existing saved overall CBF,
+  Cartesian gains, base transforms and actuator scales are preserved.
+- Validation: rebuilt interfaces, configuration, safety, controllers and bringup
+  in the isolated ROS Humble Docker overlay. All 153 current tests passed with
+  zero errors/skips: Quest/configuration 34, safety/coordinator 43, controllers
+  61, bringup 15. New tests include a blocked worker, expired/out-of-order/old-mode
+  results, mandatory world-table behavior with optional CBF off, secondary
+  infeasibility, release/re-engagement recovery, bounded model grace, peer loss,
+  zero heap allocations and actual single/dual mock processes with 20 ms worker
+  cadence or an infeasible optional obstacle. Final log:
+  `/tmp/teleop_async_verified.log`; script:
+  `/tmp/teleop_joystick_humble/validate-async.sh`.
+- Final local-layer benchmark (2,000 evaluations per case) averaged 52 us single,
+  94 us dual and 224 us dual with an infeasible optional obstacle; p99 values
+  were 90/157/386 us and observed maxima 109/175/423 us. No mandatory-guard fault
+  occurred in those fixtures. This includes model validation and local repair,
+  not libfranka model acquisition/nominal-law computation or hardware timing.
+  Log: `/tmp/teleop_async_benchmark_final.log`. Formatting and diff checks pass.
+- No physical FCI/device operation was performed. Rebuild the normal deployment
+  overlay before operator tests; validation used isolated `/checks` artifacts.
+  Measured plane/base/tool validity, stopping behavior and hardware worst-case
+  callback timing still require commissioning. Secondary residuals remain
+  visible when conflicting optional barriers cannot all be satisfied.
+
+### Controller configuration cleanup (2026-10-24)
+
+- Removed unused `teleop_controllers/config/cartesian_impedance_controller.yaml`.
+  Normal controller launch already loads `config/controllers.yaml`; homing
+  includes that same launch. Preserved every active value in `controllers.yaml`.
+  The similarly named legacy `panda_bringup` configuration is a separate package.
+- Rebuilt the package in the isolated Humble overlay and verified a fresh staged
+  install contains `controllers.yaml` as its only YAML configuration. Removed the
+  old file from the isolated test install before verification. Single-arm,
+  dual-arm and homing mock launches published controller status with unchanged
+  active gains and nullspace/homing enabled. All eight runtime configuration
+  tests passed. Log: `/tmp/teleop_config_cleanup.log`. No physical devices used.
+
+### Home-posture nullspace torque and final singularity CBF (2026-10-24)
+
+- Added mass-aware, dynamically consistent nullspace torque to Cartesian and
+  orientation-only control. It combines a configured home spring, damping and
+  soft joint-limit repulsion, with a uniform torque cap and entry ramp. Fixed-size
+  SVD handles numerical rank loss without a damped inverse. The runtime now
+  supplies the same measured mass matrix to the nominal law and safety filter.
+- Added one per-arm `home_joint_position` setting shared with actual homing,
+  replacing the hardcoded homing goal. Global and per-arm controller settings
+  expose nullspace enable/gains/margin/cap/ramp; package and combined templates
+  retain their existing Cartesian gains, actuator limits and overall CBF switches.
+- Added optional dimensionless manipulability constraints to the final CBF for
+  all nominal modes. The relative-degree-two row includes the mass/Coriolis
+  acceleration and directional Hessian term. Local measured screw-axis kinematics
+  retain the actual tool transform; independent forward-kinematics derivative
+  checks validate the implementation in robot-free fixtures.
+- Invalid geometry or an initial state outside the higher-order domain stops
+  ownership. With singularity protection active, an uncertified QP result stops
+  immediately with `solver_failures`; an actuator-bounded damping fallback is
+  not treated as singularity-safe. Existing multi-cycle fallback behavior is
+  retained when singularity protection is off. Added `CbfStatus` fields for
+  manipulability, row count, domain validity and fatal solver failure.
+- Validation: rebuilt interfaces, configuration, safety, controllers and bringup
+  in the isolated ROS Humble Docker overlay. All 137 tests passed without skips
+  or errors: Quest/configuration 34, safety/coordinator 31, controllers 57 and
+  bringup 15. Coverage includes nonidentity-mass task acceleration decoupling,
+  cap/rank-loss/ramp behavior, configured actual homing, independent kinematic
+  derivatives, dynamic barrier intervention, invalid-domain/infeasible stops,
+  heap-allocation checks and single/dual mock launch behavior. Final log:
+  `/tmp/teleop_nullspace_final.log`; validation script:
+  `/tmp/teleop_joystick_humble/validate-nullspace.sh`. The manipulability helper
+  averaged about 8.4 microseconds per arm over 10,000 local optimized evaluations;
+  this is not a worst-case runtime or physical timing measurement. Formatting
+  and `git diff --check` pass.
+- Physical FCI operation and commissioning were not performed. Numerical
+  derivatives, sampled dynamics, feasibility and threshold selection remain
+  explicit limits on any avoidance claim; see `CBF_PANDA.md`.
+
+### Joystick duration control and persistent cable force hold (2026-10-24)
+
+- Replaced side-grip/click actuation with mirrored horizontal joystick control:
+  right left closes/right opens; left right closes/left opens. Fixed independent
+  opening/closing speeds and held duration determine travel; axis magnitude
+  beyond hysteresis thresholds does not change speed. Neutral cancels unfinished
+  motion instead of completing a close/open after release.
+- Re-enabled libfranka force grasps. A successful grasp command, `is_grasped`
+  feedback and configured cable diameter band must agree before reporting
+  `holding`. A zero close target accepts cable contact above zero through the
+  SDK tolerance while software rejects empty/out-of-band closure. Confirmed
+  force holds persist in neutral and through Quest input/focus loss; explicit
+  outward input releases force before opening. Faults stop unfinished motion
+  and require available neutral input before resuming. No close retries or
+  automatic force increases remain.
+- Serialized cancellation against SDK command completion so neutral during
+  final readback cannot release a just-completed grasp. Retained bounded stop
+  retries/acknowledgement diagnostics and explicit hardware fault recovery.
+  Joystick subscription uses best-effort depth one to avoid stale reliable
+  delivery; source freshness/watchdog gates remain enforced. Status now reports
+  `grasp_confirmed`, `neutral_required`, and commanded (not measured) grasp force.
+- Added signed joystick axes/availability to the Quest serializer, bridge and
+  ROS schema. Missing axes from older APKs stay inactive; partial/out-of-range
+  axes invalidate input. Package/combined/per-arm config supports cable size,
+  tolerance, force and thresholds. Force is unknown and ships as `-1` (unset),
+  disabling closing until configured while retaining opening.
+- Humble builds of interfaces, Quest and Hand passed. Focused validation passed
+  33 Quest cases, 42 Hand cases (15 decision core, 23 injected backend, 4 ROS),
+  plus the actual C++ packet/transport test: 76 individual cases. APK assembled
+  successfully offline and its native library contains the new axis fields.
+  Rebuilt remaining ROS consumers against the new schema and rebuilt the
+  current safety dependency in an isolated copy. Eight launch-option cases
+  and the dual assigned-Hand joystick acceptance passed: 85 individual cases
+  overall. Final backend checks include neutral before SDK submission,
+  neutral during force release, failed release blocking opening, and failed
+  cleanup of an unconfirmed grasp. A submission gate prevents redundant
+  stops while initial readback/force release is still in progress.
+  No APK installation or physical Hand/FCI operation was performed. Validation
+  build/test logs are `/tmp/teleop_joystick_humble_validation.log`,
+  `/tmp/teleop_joystick_gripper_final.log` and
+  `/tmp/teleop_joystick_bringup_validation.log` on the host.
 
 ### Right-Hand opening lockout and late stop acknowledgement (2026-10-23)
 

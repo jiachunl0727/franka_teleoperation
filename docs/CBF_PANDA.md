@@ -1,254 +1,292 @@
-# Panda adaptation of the thesis_ws CBF-QP
+# Panda CBF-QP, asynchronous execution and mandatory table guard
 
-The safety layer receives seven nominal torques per arm and returns bounded
-commands. With control barrier functions (CBF) enabled, it solves a quadratic
-program (QP) to stay close to nominal torque while satisfying modeled joint
-and collision constraints. With CBF disabled, actuator magnitude/rate bounds
-still apply. Start with the editable settings below; the later sections explain
-the model, threading and failure behavior for controller developers.
+Current behavior (2026-10-27): single- and dual-arm owners run the nominal torque
+law at 1 kHz without waiting for the background CBF-QP. Each owner checks its
+current candidate locally. Ordinary worker delay/failure selects braking then
+joint holding while retaining FCI ownership. The shared world-table guard and
+actuator bounds remain active with the optional CBF disabled.
 
-Current status: the filter is connected to the actual single/dual arm executable.
-Robot-free core/coordinator/process tests pass. Hardware callbacks collect one
-RobotState's mass, coriolis, poses and Jacobians; successful physical CBF/timing
-commissioning has not been established by these tests.
+This is the implemented numerical/model policy. Robot-free tests do not certify
+physical collision avoidance, table clearance, model accuracy or worst-case
+hardware callback timing. The table plane, base transforms, margins, tool model
+and stopping response require operator commissioning.
 
-## Formulation and adaptation
+## Runtime ownership and asynchronous handoff
 
-The filter retains the thesis_ws joint/collision exponential CBF formulation
-and torque-tracking QP: minimize weighted squared deviation from nominal
-torque, subject to joint position, velocity, acceleration, actuator magnitude/
-rate, table, same-arm, inter-arm and optional spherical obstacle constraints.
-Franka's torque interface compensates gravity; the modeled acceleration is
-`M^-1 (tau - coriolis)`. Cartesian impedance remains the agreed filtered-error
-law, and the separate joint homing law supplies another nominal torque source.
-Both pass through the same filter before torque is returned.
+`safety_filter` is linked into `teleop_controllers`; its launch file loads
+parameters, not a second robot connection or ROS safety service. Each arm retains
+one permanent libfranka owner across Cartesian, orientation-only, position hold,
+homing and fallback modes.
 
-- Uses FER/Panda joint/velocity/acceleration/torque ceilings, not FR3 values.
-  The acceleration reference remains `7 rad/s²`. Actuator defaults are now
-  35% of published FCI torque/rate ceilings: joints 1--4 `30.45 Nm`, joints
-  5--7 `4.2 Nm` and all joints `350 Nm/s`. These are software bounds, not
-  physical commissioning approval.
-- Rate constraints intersect magnitude limits using each arm's actual
-  `tau_J_d`, rather than the filter's previous requested output. Each slew
-  interval is capped at one millisecond even after a delayed callback.
-- Single-arm masking disables inactive-arm barriers and forces its dummy
-  torques to zero. CBF-enabled dual mode retains coupled collision rows; independent
-  per-arm filters cannot substitute for that coordinator.
-- Geometry transcribes the pinned Panda URDF coarse cylinders/spheres as
-  capsules, including the Panda flange geometry and hand mounting yaw. The
-  same-arm exclusion list matches the pinned Panda arm/hand SRDF. Hand logical
-  link 9 remains distinct from flange link 8. Clearance padding is added once.
-- Invalid models, empty actuator intervals and nonfinite active rows are
-  reported as fatal input faults. Invalid rows are never silently disabled.
-  Solver failure returns a bounded fallback and explicit constraint violation;
-  fallback is not presented as geometrically safe.
-- Legacy hardware end-effector rotations may include float-rounded `0.7071`
-  coefficients. The hardware adapter orthonormalizes only near-rigid measured
-  end-effector/model end-effector poses (finite homogeneous matrix, positive
-  determinant, determinant/orthogonality errors and correction bounded by
-  `1e-4`). Translation and Jacobians are preserved; joint/flange poses remain
-  raw. The strict filter rotation checks remain `1e-8`. Reflections, degenerate
-  and substantially distorted transforms still stop control. This follows the
-  pinned libfranka 0.9.1+ orthonormalized-rotation convention; it does not change
-  Desk's configured tool transform or load.
-- Fixed solver dimensions and numeric storage are allocated during configure.
-  The CSC matrix includes only structurally possible coefficients: one per
-  actuator row, seven for same-arm dynamics/geometry, and fourteen for coupled
-  inter-arm rows. Configured inactive-arm/disabled barriers have no solver
-  coefficients and are omitted from the solver's fixed row mapping. Logical
-  rows and their original bounds remain available for
-  independent feasibility checking; distance-activated rows keep their full
-  possible support. The pattern never changes in the realtime path.
-  Runtime results use constant status strings, fixed model arrays and no heap
-  allocation. Tests instrument both C++ allocation and solver malloc/calloc/
-  realloc paths. OSQP signal handling/printing/MKL loading are disabled.
+- **Owner callback:** obtains current robot/model state and nominal torque,
+  publishes a latest-only worker request, reads available worker/peer snapshots,
+  performs bounded current-state local checks/repair, and returns torque.
+  There is no worker wait or OSQP call in the default callback path.
+- **Worker:** consumes the latest requests at a configurable cadence (5 ms by
+  default) and solves the single/coupled CBF-QP. It uses a lower FIFO priority
+  than the hardware FCI callback. Superseded requests do not form a backlog.
+- **Result:** includes original model timestamps, cycles, nominal torque, joint
+  state and mode/session/reference epochs. Completion does not refresh source
+  age. Duplicate/out-of-order results cannot replace a newer cached result.
+- **Acceptance:** source age, completion time, epoch and source-state change
+  bounds must pass. Defaults permit at most 0.10 rad joint change and 1 rad/s
+  velocity change from the worker source; those two bounds are C++ defaults.
+  Current state/constraints and current `tau_J_d` are rechecked independently.
+
+For a usable result, the preferred torque is the current nominal torque plus
+`worker_safe - worker_nominal`. This retains current target changes; it does not
+blindly replay a previous target torque. A release, session/reference change,
+homing transition, controller-mode change or shutdown invalidates the old epoch.
+A new epoch has a bounded warmup window while a matching worker result arrives;
+that expected wait alone does not immediately disarm every new engagement.
+
+Worker Jacobian derivatives use the actual interval between consumed model
+source timestamps. Long history gaps reset derivative history. Callback-side
+checks maintain independent history. No previous worker result is assumed safe
+solely because it is younger than an age threshold.
+
+### Dual-arm behavior
+
+The background QP remains coupled and requires sufficiently fresh paired states.
+Each owner also receives its peer's independently published latest snapshot,
+without waiting for the worker. Local inter-arm rows eliminate the other arm's
+possible torque over a magnitude/slew-bounded interval, rather than assuming it
+will apply a cached command. Peer-state age adds a configurable displacement
+reserve to **inter-arm geometry**, not to the current arm's table boundary.
+
+When peer information is missing or stale, tracking is inhibited and the owner
+brakes/holds using available local protection. Unavailable peer geometry is not
+presented as a verified inter-arm result. Shared stop propagation remains; normal
+finishing waits for both owners' finish requests, without requiring a final QP.
+
+## Current-state guard and fallback
+
+`AsyncSafetyController` owns per-arm model/result acceptance and braking/holding.
+`CbfSafetyFilter::guard()` rebuilds current constraints without allocating an
+OSQP workspace or calling the solver. It verifies a bounded preferred torque;
+if it fails, the guard starts from a braking/holding command and performs at most
+12 fixed constraint-repair sweeps. Eight sweeps consider the full enabled set;
+the last four prioritize mandatory actuator/table rows. No convergence wait or
+unbounded iteration is used. A fully feasible preferred torque needs no repair. Before escalating a failed
+repair, the actual current robot torque is also bounded and checked against the
+current mandatory rows; an old worker torque is never replayed unchecked.
+
+The fallback joint reference decelerates its desired velocity toward zero using
+`braking_acceleration`, with model acceleration feedforward and joint PD damping.
+After measured velocity settles below 0.02 rad/s and the desired velocity has
+reached zero, measured joints are captured once for holding. The anchor does not
+follow old Quest targets. There are no autonomous retreat waypoints; safety
+constraint corrections can still change the braking torque.
+
+| Condition | Default asynchronous response |
+| --- | --- |
+| Late, stale, failed or infeasible worker result | Local braking/holding; FCI retained |
+| Matching result not yet available for a new context | Bounded warmup holding; no stale target replay |
+| Healthy worker after a latched fallback | Keep holding until fresh post-fault trigger release/re-engagement and healthy dwell |
+| Secondary CBF shaping cannot all be satisfied | Brake/hold with a mandatory-table/actuator-valid candidate; report residuals and degraded status |
+| Isolated invalid model calculation | Bounded model grace, braking/holding and extra displacement reserve |
+| Invalid essential joint feedback or expired model grace | Exceptional shared stop |
+| No candidate passes mandatory actuator/table bounds after bounded repair | Exceptional shared stop |
+
+A relaxed braking command is **not certified to satisfy every obstacle,
+singularity or joint-limit CBF**. The status explicitly distinguishes it from a
+fully verified result. Constraint repair is a bounded feasibility heuristic; a
+failure to find a mandatory command is not proof that none exists. Such failure
+still cannot authorize sending an unchecked table command. Ordinary QP difficulty
+alone does not terminate ownership.
+
+Model grace defaults to 3 ms, requires finite current joint feedback and torque
+anchors, and permits at most 0.01 rad/0.1 rad/s change from the last good model.
+The good model timestamp is never advanced by reuse. This handles isolated model
+failures, not indefinite sensor loss. The local reserve increases with joint
+change while using model grace.
+
+`cbf.execution: synchronous` retains the former exact-cycle wait for explicit
+comparison. Its result/filter deadline and repeated-failure stops remain. With
+optional CBF disabled, the mandatory local table/actuator path is used regardless
+of the execution selector. The old 800 us filter / 900 us result limits do not
+terminate default asynchronous operation. Actual libfranka/robot timing and
+communication requirements still apply to the callback itself.
+
+## QP formulation and constraints
+
+The worker minimizes weighted squared deviation from nominal torque:
+
+`min 0.5 * (tau - tau_nominal)^T W (tau - tau_nominal)`
+
+subject to linear torque inequalities `lower <= A*tau <= upper`. There are 14
+variables; inactive-arm torques are zero. Franka's gravity-compensated torque
+convention gives `qdd = M^-1 (tau - coriolis)`. Tracking is a soft objective;
+worker constraints have no slack variables and may be infeasible together.
+
+- **Joint position:** Panda bounds tightened by 0.10 rad, with
+  `hddot + 2*zeta*omega*hdot + omega^2*h >= 0`; default omega 8 s^-1, zeta 1.
+- **Joint velocity:** 90% of Panda specification ceilings, with first-order
+  barrier gain 10 s^-1.
+- **Joint acceleration:** model-based limits of 7 rad/s^2 per joint.
+- **Collisions:** 14 pinned Panda coarse capsules per arm; table, selected
+  self-pairs, inter-arm pairs and optional configured static spheres. Self-pair
+  exclusions follow the pinned Panda SRDF. Default added clearances are 0.02 m
+  table, 0.03 m self, 0.05 m inter-arm and 0.04 m obstacles. Optional collision
+  rows activate within 0.15 m beyond their padded boundary. Collision omega is
+  8 s^-1 and damping ratio 1.2. Numerical Jdot and closest-point transitions are
+  approximations; the model is not a detailed finger/cable/tool mesh.
+- **Singularity:** optional determinant/manipulability barrier described below.
+- **Actuators:** mandatory magnitude and rate interval intersection.
+
+A parked arm gets 12 times the torque-deviation weight of a moving arm in the
+coupled worker objective. This encourages preserving parked-arm torque without
+preventing safety intervention. Priority persists while both are parked close
+together and releases after separation.
+
+Pinned OSQP 0.6.3 uses double precision, warm starts, a 100-iteration default,
+1e-4 absolute/relative tolerances and independent 1e-3 final row feasibility
+checking. A fully feasible nominal torque is the exact objective minimum and
+bypasses iterative solving. A finite iteration-limit candidate can be accepted
+only after independent bounds checking. Matrix shape/storage is allocated at
+configuration; disabled rows are excluded from the fixed sparse solver mapping.
+Worker solver failure flags are consumed as degradation information in async
+mode, rather than the historical immediate ownership stop.
+
+### Geometry computation and pair pruning
+
+For exact capsule placements, stored centerline boxes, URDF mesh overlays and
+world-coordinate exports at the configured home posture, see the
+[geometry illustration](figures/cbf_geometry/README.md). The reproducible
+robot-free script reads the C++ initializer and checks its 14 definitions
+against the pinned URDF collision primitives before rendering.
+
+Disabled collision families and inactive arms skip their geometry calculations.
+Only capsules required by an enabled family are transformed. With optional CBF
+off, the local guard transforms the 12 table-checked capsules per active arm;
+it does not calculate self/inter-arm/obstacle distances. Disabled or unavailable
+families report the existing `1e9` minimum-clearance sentinel, meaning **not
+evaluated**, not measured free space. The table remains evaluated and enforced.
+
+Self-pairs retain the pinned SRDF exclusions. Fixed base/base inter-arm pairs
+are already excluded at configuration; the other 195 possible inter-arm pairs
+remain eligible. Additional moving pairs are not permanently excluded based on
+an assumed pose or because collision seems unlikely.
+
+For enabled self/inter-arm/obstacle families, a cheap axis-aligned bounding-box
+test precedes exact segment/point distances. Box distance is a conservative
+lower bound on centerline distance. Exact calculation is skipped only when
+that bound exceeds both the padded activation boundary and the best exact
+minimum clearance found in this evaluation. Padding includes capsule/obstacle
+radii, configured clearance, local reserve and (for inter-arm pairs) peer-age
+reserve. A small numerical tolerance favors an exact check at the boundary.
+This preserves active rows and exact minimum-clearance diagnostics for enabled
+families. Bounds are rebuilt every evaluation, so an approaching pair returns
+automatically; deactivation resets its Jacobian derivative history.
+
+Independent feasibility checking and bounded local repair scan current active
+rows in their original order, using storage reserved at configuration. Inactive
+zero rows remain in the logical layout for fixed solver mapping/history but do
+not consume repeated peer-elimination, residual or repair work. Internal C++
+`SafetyResult::geometry_work` counters expose transformed capsules, exact distance
+calculations and bounding-box rejections without callback allocation.
+
+## Mandatory world-table plane
+
+`table_height` is the horizontal table plane's world z. Both arms use their
+surveyed `world_from_base_xyz_xyzw` transforms to evaluate it. The local guard
+checks the lowest endpoint of every modeled capsule, subtracting capsule radius,
+plane height, `table_minimum_clearance` and the local uncertainty reserve. Logical
+links below 2 are excluded as mounting geometry; this does not model arbitrary
+fixtures around the base.
+
+Table rows remain present at **every height** in the local guard, even with
+`pipeline.cbf_enabled: false`. The guard considers velocity, model acceleration
+and torque-rate limits, rather than merely clipping an end-effector target z.
+Zero-authority table rows are retained and can cause an exceptional stop.
+
+There is no universal software guarantee that the table can never be hit:
+incorrect transforms/geometry, insufficient braking distance, infeasible torque
+bounds, disturbances and missed hardware callback deadlines remain relevant.
+Choose surveyed plane/margins and validate stopping response before physical use.
+The mandatory guard is a substantial change from the old CBF-disabled baseline.
+
+## Nullspace posture and singularity constraint
+
+The nominal Cartesian modes use the configured home joint posture and a
+dynamically consistent secondary torque. With `M=L L^T`, `A=J L^-T`, the projector
+is `N_tau=L (I-A^+A) L^-1`; fixed-size SVD uses relative rank tolerance 1e-8 and
+absolute floor 1e-12. The secondary term combines home stiffness, joint damping
+and soft joint-limit repulsion, with a uniform torque cap and entry ramp.
+`controller.home_joint_position` is shared with actual homing; per-arm overrides
+belong under `arm_settings.<arm>.controller`. This is a posture preference,
+subject to the final safety path.
+
+For singularity avoidance, `Js=[J_linear/length; J_angular]`,
+`m=det(Js Js^T)`, `h=m/minimum_manipulability^2-1`. The acceleration barrier is
+`hddot + 2*omega*hdot + omega^2*h >= 0`, including
+`hddot=grad(h)^T M^-1(tau-c) + dq^T Hessian(h) dq`.
+Default characteristic length is 0.3 m, minimum manipulability 0.05 and omega
+8 s^-1. Measured joint screw axes/origins and the actual end-effector position
+construct local perturbed kinematics; the reconstructed Jacobian is checked
+against the backend Jacobian. Central differences use 1e-4 rad perturbations.
+
+The worker checks the higher-order domain `h>=0` and `hdot+omega*h>=0`. In async
+mode a domain violation degrades tracking and the local guard attempts the
+restorative row where its gradient is valid. It does not immediately terminate
+ownership solely for being outside that domain. At exact singularity the
+manipulability gradient can provide no recovery direction; holding is not an
+escape guarantee. Singularities and other secondary barriers are bypassed when
+optional CBF is disabled; the mandatory table/actuator guards remain.
 
 ## Editable actuator limits, including CBF-disabled operation
 
-Combined bringup reads these settings from the selected
-`teleop_bringup/config/single_panda.yaml` or `dual_panda.yaml`. Standalone
-controller launch reads them from `safety_filter/config/safety.yaml` by default
-(or the file selected by `safety_config`). These are alternative launch inputs;
-changing the standalone safety file does not override a selected combined YAML.
+`cbf.torque_limit_scale` and `cbf.torque_rate_limit_scale` are fractions in `(0,1]`
+of Panda FCI ceilings, applied once. Default 0.35 gives joints 1--4 30.45 Nm,
+joints 5--7 4.2 Nm and 350 Nm/s. Controller absolute caps can tighten them; dual
+mode uses the stricter configured arm cap. The rate interval is anchored to
+current `tau_J_d`, capped at 1 ms elapsed time, including for reused candidates.
+An empty magnitude/rate intersection is invalid, not silently overridden.
+
+## Configuration and diagnostics
+
+Combined bringup reads its selected single/dual YAML; standalone launch uses
+`safety_filter/config/safety.yaml`. Existing saved overall CBF switches, gains,
+actuator scales and base transforms are preserved. Changes require restart.
 
 ```yaml
 cbf:
-  torque_limit_scale: 0.35
-  torque_rate_limit_scale: 0.35
+  execution: asynchronous             # synchronous retained for comparison
+  worker_period_ms: 5.0
+  maximum_result_age_ms: 50.0          # from source, not completion
+  maximum_worker_state_age_ms: 20.0
+  maximum_peer_age_ms: 10.0
+  maximum_worker_skew_ms: 5.0
+  recovery_dwell_ms: 100.0
+  model_grace_ms: 3.0
+  braking_acceleration: 2.0            # rad/s^2
+  fallback_hold_stiffness: 120.0       # Nm/rad
+  fallback_hold_damping: 22.0          # Nm s/rad
+  guard_clearance_reserve: 0.005       # m
+  peer_motion_bound_mps: 22.0          # peer-age geometry envelope; validate tool/domain
+  table_height: 0.0                   # surveyed shared world-z plane
+  table_minimum_clearance: 0.02
 ```
 
-Both fractions must be finite and in `(0, 1]`. Edit the selected YAML and restart
-bringup; the bounds are configured before control starts, without live retuning.
-They belong to the `cbf` configuration block for organization but are always
-enforced, including `pipeline.cbf_enabled: false` / ROS `cbf.enabled=false`.
-The former top-level `safety` block and `safety.*` scale parameters are replaced
-by these `cbf.*` keys; old parameter overrides are rejected with a migration error
-instead of silently ignoring a potentially stricter cap.
-The scale is applied once to the Panda FCI ceilings, not to a previously reduced
-software limit:
+`maximum_failures` governs the historical synchronous failure path; async mode
+holds instead of stopping after an arbitrary count of failed solves. Timing
+values and model motion bounds are commissioning settings, not delay certificates.
 
-| Bound | FCI ceiling | At scale 0.35 |
-| --- | --- | --- |
-| Torque, joints 1--4 | 87 Nm | 30.45 Nm |
-| Torque, joints 5--7 | 12 Nm | 4.2 Nm |
-| Torque rate, all joints | 1000 Nm/s | 350 Nm/s |
+`/ARM/cbf_status` reports local verification status, total intervention from
+current nominal torque, residuals, active constraints, table/self/inter-arm
+clearances, manipulability, local filter time, worker solve time/status/source
+cycles/age, result usability, peer usability, model reuse, braking/holding state,
+fallback reason and shared stop reason. Original worker source timestamps remain
+visible when its correction is reused. A locally feasible braking command does
+not imply that the worker succeeded or tracking is re-enabled.
 
-At 1 ms, the torque-rate limit allows at most `0.35 Nm` change per cycle, anchored
-to incoming `tau_J_d`. The interval is capped at 1 ms after a delayed callback.
-Existing `controller.torque_limits` and `controller.maximum_torque_rate` are
-additional absolute caps: the effective limit is the minimum of the scaled FCI
-ceiling and those caps, never their product. In dual mode, the existing shared
-filter uses the stricter configured cap from either arm for both arms.
+## Verification boundary
 
-Cartesian teleoperation, joint position hold, homing, fault damping and bounded
-safety fallback all use the same actuator limits. With CBF disabled the output
-is clipped into the magnitude/rate intersection; with CBF enabled the same
-bounds also constrain the QP. Startup logs print the effective bounds, and
-`TrackingSample.torque_limits`/`maximum_torque_rate` retain their actual values.
-Manager preflight uses those same final bounds. An empty intersection with the
-incoming robot torque still terminates control rather than violating either
-bound to enter the new limits.
-
-Nominal torque is recorded before clipping and can exceed these limits.
-The bounds apply to commanded joint torque; they do not cap robot-side gravity
-compensation, total measured torque, the Hand's grasp force, or Cartesian contact
-force. They do not change manufacturer protections or collision thresholds.
-Lower torque/rate bounds can reduce holding strength and slow transitions.
-Joint/Cartesian velocity and acceleration constraints remain CBF constraints;
-this change does not add them to CBF-disabled operation.
-
-## Collision constraints
-
-Collision rows use closest capsule points, interpolated point Jacobians,
-finite-difference `Jdot*dq` history and curvature terms. Coincident points
-retain the previous separation direction or choose a controllable axis.
-No slack silently relaxes actuator/collision constraints. A fixed-iteration
-solver candidate is accepted only after an independent check of all current
-constraints within configured numerical tolerance. Parked-arm weighting
-changes the soft torque objective; it does not relax collision rows.
-
-After constructing and validating every current constraint, the filter first
-checks the nominal torque (with inactive-arm torques forced to zero). If its
-maximum violation is exactly zero, it is the exact optimum of the positive
-weighted squared-distance objective. Report `feasible_nominal`, zero solver
-iterations and zero violation, and seed OSQP's primal warm start. This path
-still validates the model, actuator bounds and all collision/joint rows and
-remains subject to the same runtime deadlines. Even violations smaller than
-the solver's feasibility tolerance require the normal iterative path.
-
-## Runtime ownership, handoff and failure behavior
-
-Combined bringup selects CBF through `pipeline.cbf_enabled` in the chosen
-runtime YAML; inspect that editable value before launch. Standalone arm launch
-also exposes `cbf_enabled`.
-Setting it false routes `cbf.enabled=false` to the owner; the coordinator
-then uses the filter's actuator-bounds-only branch, without joint/collision
-barriers or QP iterations. All model/actuator validity, exact-cycle handoff,
-own-state age/deadline checks and consumer engagement gates remain. It reports
-`disabled_actuator_bounds_only` and a startup warning. This removes software
-collision and joint CBF protection; it is not normal commissioning acceptance
-and does not alter the robot's own protections or start physical control
-automatically. Combined bringup has no separate CBF command-line override.
-
-One permanent owner per arm computes Cartesian, joint-hold, homing or damping nominal torque.
-A single coordinator owns the 14-variable QP and consumes fixed-size model
-snapshots through independent SPSC latest-snapshot lanes. Each owner waits only
-for a reply carrying its exact cycle and model timestamp; earlier-cycle results
-are never applied. The coordinator requires a new snapshot from each active arm
-for every coupled solve. Single mode masks the inactive arm completely.
-
-With CBF disabled, dual actuator bounds are checked in independent arm lanes
-inside the same coordinator. Each lane uses its own current model, nominal
-torque, `tau_J_d` anchor and period, with the same configured magnitude/rate
-caps. It returns an exact-cycle result without waiting for a peer callback.
-This avoids a first-cycle timeout when independent robots enter FCI control
-at different times. Own-state validity, age, filter/result deadlines and shared
-fault stop remain enforced. Peer model age/skew are irrelevant to these local
-actuator checks; CBF-enabled dual operation still requires coherent peer state.
-The actuator-only status contains only its own source timestamp; the unused
-array entry is zero, and zero `state_skew_ns` does not imply synchronized robot
-sampling. No previous-cycle torque or safety result is reused in either mode.
-
-Hardware provisional limits: model age 2 ms, cross-arm timestamp skew 1 ms,
-callback/model/solve/result deadline 0.9 ms, and filter computation 0.8 ms.
-The cross-arm skew limit applies to coupled CBF filtering.
-These are enforced software limits, not measured timing guarantees. Snapshot
-timestamps are local callback-entry times; they do not establish synchronized
-physical acquisition across robot clocks. Bound network/receive delay and its
-variation during commissioning. The hardware
-coordinator requires maximum SCHED_FIFO priority and memory locking; libfranka
-retains its own enforced realtime configuration. A bounded 25 microsecond wait
-lets the equally prioritized coordinator run even on a shared CPU. Thread
-placement, wakeup jitter and worst-case time must be measured on the deployment
-PC. No mutex or ROS work enters the torque/model/coordinator path.
-
-On a result/filter deadline stop, postmortem `CBF timing` lines report each
-owner's final cycle: callback-to-submit preparation, submit-to-owner-return wait,
-total elapsed time and the unchanged result deadline. A matching coordinator
-result adds submit-to-coordinator delay, coordinator work, filter duration and
-solver status. Missing or different-cycle results are marked unavailable (`-1`
-for times). Coordinator completion can occur after the owner has timed out;
-postmortem availability does not mean the torque was accepted. All formatting
-and logging occurs after the owner and coordinator threads have joined.
-Timing stops also report solver duration/iteration count and export a matching
-consumed model to `/tmp/franka-cbf-model-arm-N.txt` in the controller's container.
-The `CBF_MODEL_V1` text format contains arm index, cycle, period, then q, dq,
-coriolis, previous desired torque, nominal torque, mass, and each frame's pose
-and Jacobian. Matrices are column-major at 17-digit precision. Export is after
-all realtime threads have joined and never clears the stop. Each subsequent
-timing failure replaces that arm's file; copy it before another trial.
-
-The non-RT mock uses age/result limits of 100 ms, skew/filter limits of 50 ms.
-These fixture limits never apply to hardware. Its collision model follows Panda
-URDF kinematics, while inertia is identity, coriolis zero, joint state fixed and
-Cartesian telemetry synthetic; it does not simulate physics or certify motion.
-
-An invalid model/transform/actuator interval, state age/skew fault, missing or
-late matching result, or filter deadline failure latches a shared stop. Solver
-infeasibility returns the explicitly reported bounded fallback, disables
-teleoperation and cancels homing; 20 consecutive failed solves by default latch
-a stop. A successful solve resets that consecutive counter, but never resets a
-latched stop. Owners terminate through libfranka exceptions without automatic
-reconnect, recovery or restart. Fallback has no geometric guarantee.
-
-Normal shutdown uses filtered measured-pose damping and controlled homing
-cancellation. Both owners must request finishing. CBF-enabled dual operation
-grants finishing in the same paired reply, preventing one owner from disappearing
-while its peer still awaits a coupled solve. Actuator-only lanes grant their
-own finish replies once both owners have requested finishing.
-`/ARM/cbf_status` reports source timestamps, cycle,
-skew, solver/filter time, failure count, constraints, clearances, intervention,
-filtered torque and stop reason. Fatal stop reasons also appear in process logs.
-
-Tests cover complete Panda model fixtures, independent command activity, paired
-results and finishing, stale/skew/deadline/model faults, repeated infeasibility,
-actual dual process filtering and actual process termination. Collision-coupled
-torque signs are exercised in the filter's controlled geometry test. None of
-these robot-free checks establishes physical 1 kHz compatibility.
-
-## Physical limitations and commissioning boundary
-
-Coarse geometry is not a mesh collision certificate. Finger motion, altered
-fingertips/tools, cables, the measured table plane and both base transforms
-require physical survey and conservative padding validation. Capsules must be
-compared with detailed geometry over the joint domain and all gripper widths.
-Closest-point changes and sampled `Jdot` are approximation limitations.
-
-No formal singularity CBF is implemented in thesis_ws or this adaptation.
-Quaternion handling and a coarse target envelope do not provide singularity,
-reachability or collision guarantees. A formal dexterity barrier needs valid
-gradients/Hessians and joint-domain/numerical/feasibility validation before
-hardware use; it must not be advertised as an existing protection.
-
-Before deployment: verify firmware/tool/payload and torque convention, measure
-worst-case 1 kHz update/solver time and jitter with all collision classes,
-bound dual-arm state skew, check zero unexpected infeasibility, test the
-independent stop/recovery path, validate home clearance, and perform staged
-physical acceptance with an observer-accessible stop. The bounded fallback
-has no geometric guarantee. These commissioning operations are outside the
-current coding task.
-
-Sources: local thesis_ws `quest_fr3_controllers/{cbf_safety_filter,CBF_DESIGN}`,
-the pinned legacy `franka_description`/`franka_moveit_config` geometry and SRDF,
-and OSQP 0.6.3. Source copyright/license headers are retained. Packaged licenses
-and dependency notices are in `src/teleop_controllers/THIRD_PARTY_LICENSES`.
+Robot-free tests cover single/dual normal launches, delayed worker cadence,
+worker infeasibility with continued ownership, current-state constraints,
+mandatory world-table behavior with CBF disabled, stale/out-of-order/context
+rejection, braking/holding and explicit recovery, peer loss, isolated model grace,
+allocation checks and exceptional table infeasibility. Performance measurements
+on fixed fixtures do not establish worst-case hardware timing. Physical FCI,
+payload/tool/frame validation, clearance and stopping acceptance remain operator
+actions. See `IMPLEMENTATION_PROGRESS.md` for dated test evidence.

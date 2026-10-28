@@ -42,12 +42,20 @@ as part of changes to the active teleoperation code.
 
 ## Arm runtime and controller structure
 
+Safety defaults to asynchronous single/dual operation. `safety_filter` contains
+`async_safety.cpp` (per-owner model/result validation and braking/holding),
+`realtime_guard.cpp` (bounded current-state constraint verification/repair),
+`safety_coordinator.cpp` (latest-only coupled worker) and the underlying
+`cbf_safety_filter.cpp` OSQP worker law. The world-table and actuator guards
+remain active with the optional CBF disabled. See [CBF_PANDA.md](CBF_PANDA.md).
+
+
 | File in `teleop_controllers` | Owns |
 | --- | --- |
 | `src/controller_runtime.cpp` | ROS parameters/subscriptions, command handoff, backend adapters, permanent FCI ownership, shared safety and non-realtime telemetry |
 | `src/controller_manager.cpp` | Freshness/session/order gates, arming, state validation, reference capture and selection of one nominal torque law |
 | `include/teleop_controllers/torque_controller.hpp` | Common fixed-size state/reference to seven-joint nominal torque interface |
-| `src/cartesian_impedance_controller.cpp` | Cartesian filtered-error impedance law |
+| `src/cartesian_impedance_controller.cpp` | Cartesian impedance with dynamically consistent home-posture/joint-limit nullspace torque |
 | `src/position_hold_controller.cpp` | Joint PD holding with stiffness ramp |
 | `src/damping_controller.cpp` | Cartesian damping plus Coriolis for safety fallback and shutdown |
 | `src/homing_controller.cpp` | Guarded home gesture, trajectory/controlled-stop state and joint torque law |
@@ -106,8 +114,9 @@ the current law does not shape inertia or adapt damping to it.
 There is no explicit nullspace damping, posture reference, projected joint PD
 term or joint-limit avoidance objective in the engaged Cartesian law.
 For a joint velocity with `J dq = 0`, its Cartesian damping term is zero.
-The physical robot can have other dynamics/friction, but this law does not
-actively suppress that redundant motion. Joint position holding and its
+The optional dynamically consistent nullspace term adds home-posture and
+joint damping in this redundant direction. The Cartesian damping term alone
+does not suppress it. Joint position holding and its
 `hold_damping` gains apply when the manager selects holding; they are not
 added to Cartesian control while the trigger is held. The separate
 `damping_controller.cpp` is a fallback/shutdown law, not another damping term
@@ -124,24 +133,23 @@ changing gains. `feedforward_scale` currently blends native and pose-derived
 velocity estimates; zero selects the pose-derived estimate and does not turn
 off reference velocity feedforward.
 
-All laws return nominal torque before actuator clipping. The runtime sends it
-to one shared safety coordinator and accepts only the matching current-cycle
-result. Both CBF-enabled QP constraints and CBF-disabled clipping enforce the
-same effective magnitude/rate bounds, anchored to incoming `tau_J_d`.
-`cbf.torque_limit_scale` and `cbf.torque_rate_limit_scale` default to 0.35;
-absolute controller caps can tighten them. In dual mode the stricter configured
-arm cap applies to both. Joint holding counts as parked for dual objective
-weighting while still passing through every enabled constraint.
+All laws return nominal torque before safety intervention. The default runtime
+publishes a latest-only worker snapshot and performs current-state local
+verification/repair without waiting. A usable worker correction is added to the
+current nominal torque, never substituted blindly for a new target. Model source
+age, context epochs and source-state change bounds gate reuse. Trigger release,
+session/reference changes, homing and shutdown invalidate old contexts.
 
-CBF-enabled dual filtering requires fresh paired states. With CBF disabled,
-the same coordinator services current-cycle actuator checks independently for
-each arm; startup does not wait for the peer's first FCI callback. Shared fault
-stop and finishing coordination remain. Only the current arm's source time is
-filled in an actuator-only safety reply; the other entry is zero.
-
-The coordinator runs on another thread, but the owner waits for its result on
-each cycle. Asynchronous result reuse is still a
-[planned extension](MILESTONE_2.md), not current runtime behavior.
+Magnitude/rate bounds remain anchored to current `tau_J_d`; configured scales
+default to 0.35 and stricter controller caps still apply. A world-table guard
+protects modeled links and Hand even with the optional CBF disabled. Dual owners
+receive independent peer snapshots, while the worker solves the coupled problem.
+Local inter-arm rows include bounded peer torque and displacement uncertainty.
+Missing/stale worker or peer information causes braking/holding instead of a
+callback wait. Recovery needs a fresh post-fault release/re-engagement and healthy
+results. Shared exceptional stop and normal finishing coordination remain.
+The original synchronous mode is retained explicitly for comparison; see
+[CBF_PANDA.md](CBF_PANDA.md).
 
 ## Add another controller design
 
@@ -160,28 +168,24 @@ loading and live design switching are not implemented.
 
 ## Hand, monitoring and recording
 
-The Hand worker owns only the gripper connection. `hand_core.cpp` recognizes
-hold/release/joystick-press gestures; `hand_worker.cpp` runs blocking moves and
-independent stop requests. Hold closes, release stops, and a joystick press opens
-to the configured width. The next motion waits for both the prior move and stop.
-A currently held, fresh grip can continue closing after the prior stop; release
-cancels that intent. Closing uses live device width, not the core's old
-completion snapshot.
-Held grip maintains a persistent closing demand, refreshed at a configurable
-cadence independently of ordinary move success/failure or reaching zero width.
-Active moves continue without interruption; refreshes use live width and can
-close a reopened gap. Release cancels the demand; transport/state/stop faults
-are not retried.
-The worker checks completions every 1 ms by default; closing and joystick
-opening have no default gesture delay, and release dispatch is event-driven.
-Opening has a separate speed setting. Status/log I/O runs in a dedicated reporting
-thread, and pending opening is dispatched before reporting completion. Command
-completion is distinguished from final readback to avoid redundant stop traffic.
-Position retries do not provide measured force regulation.
-Fresh grip actions are accepted independently of Cartesian pose tracking.
-Enabling Hand requests one empty-hand startup calibration; the manual service
-remains available. Closing uses position motion, not the legacy force-based
-grasp toggle. See [Hand control](TELEOPERATION_RUNTIME.md#hand-position-control-and-joystick-opening).
+The Hand worker owns only the gripper connection. `hand_core.cpp` maps a
+normalized inward joystick axis to fixed-speed closing or opening, with a
+neutral gate after calibration/input faults. `hand_worker.cpp` runs blocking
+force grasps, opening moves, readback and independent cancellation. Mirrored
+horizontal directions are normalized per assigned hand. Neutral stops unfinished
+motion while a completed, validated cable grasp remains force-held. An outward
+command releases that hold before opening. Quest loss preserves the confirmed
+hold but cancels unfinished motion and requires fresh neutral before movement.
+
+Grasps require configured force plus a cable diameter/tolerance band. Firmware
+success and `is_grasped` readback must agree with the band; empty closure is
+rejected. There are no automatic force increases or closing retries. Motion
+and cancellation remain serialized. Completed-command gating prevents neutral
+from releasing a just-completed grasp during final readback. The worker checks
+completions every 1 ms by default, and status/log I/O stays outside the input
+path. Pose tracking is independent of joystick availability. Enabling Hand still
+requests one empty-hand startup calibration; explicit recovery remains available.
+See [Hand control](TELEOPERATION_RUNTIME.md#hand-joystick-control-and-force-holding).
 
 Calibration and live-close feedback share a bounded 10 micrometre endpoint
 readback allowance. Accepted internal widths are clamped to calibrated travel;

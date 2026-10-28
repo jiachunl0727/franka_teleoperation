@@ -1,15 +1,16 @@
 # Milestone 2: asynchronous CBF and teleoperation performance
 
-This is a design plan, not a description of available runtime switches.
-As of 2026-10-16, the controller-law separation, release position holding,
-pose/velocity/four-torque telemetry, PlotJuggler layout and MATLAB report tools
-are implemented. Asynchronous CBF result reuse, pose interpolation and
-controller-comparison experiments remain pending. The owner still waits for
-the current cycle's safety result. Use [PACKAGE_STRUCTURE.md](PACKAGE_STRUCTURE.md)
-for the implemented architecture and [TRAJECTORY_MONITORING.md](TRAJECTORY_MONITORING.md)
-for available analysis. Earlier requirements to preserve trial logs below are
-historical; the owner authorized removing existing logs and recordings during
-the 2026-10-16 maintenance cleanup.
+Current status (2026-10-27): asynchronous CBF-QP is implemented for single
+and dual arms, with callback-side verification, braking/holding fallback and a
+mandatory shared-world table guard even when the optional CBF is disabled.
+See [CBF_PANDA.md](CBF_PANDA.md) for the implemented controls and limitations.
+Physical trials remain operator actions.
+
+The sections below retain the earlier 2026-10-16 design and experiment plan.
+Its single-arm-only scope and synchronous waiting descriptions are superseded
+by the owner's 2026-10-27 requirements and current implementation. Filtering,
+interpolation, nullspace torque and orientation-only mode are also implemented;
+controller comparison experiments and physical acceptance remain separate work.
 
 ## Milestone 1 acceptance
 

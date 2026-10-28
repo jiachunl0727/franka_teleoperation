@@ -1,5 +1,55 @@
 # Teleoperation implementation policy
 
+## Asynchronous single/dual safety and mandatory world-table override (2026-10-27)
+
+The owner reports frequent hardware CBF deadline stops and now authorizes
+asynchronous CBF-QP for both single and dual arms. The 1 kHz owner must not wait
+for a worker result. Validate candidates against current model/actuator limits;
+ordinary worker delay/failure enters braking then local joint holding while
+retaining FCI ownership. Recovery needs usable results plus explicit trigger
+release/re-engagement. Static obstacles only; no autonomous retreat path.
+Use a shared world-z table plane from surveyed base transforms. Its local guard
+is mandatory even when the optional CBF switch is off. Preserve existing saved
+switches and actuator settings. Keep exceptional termination for invalid essential
+feedback or inability to validate mandatory actuator/table commands, without
+claiming that a best-effort fallback satisfies all conflicting CBF constraints.
+Bound model grace, result/peer age and local computation; retain diagnostics and
+robot-free validation. This supersedes earlier synchronous, single-arm-only and
+CBF-disabled table-bypass policies. No physical operation is authorized.
+
+## Nullspace posture and final singularity CBF override (2026-10-24)
+
+The owner requests both joint-limit and singularity avoidance, accepts dynamically
+consistent torque projection, and selects the configured home posture as the
+preferred joint reference. Share one per-arm home setting with actual homing.
+Keep Cartesian tracking as the nominal task, with bounded/ramped secondary
+posture and joint-limit terms. Final enforcement belongs to the common CBF,
+which may override tracking and applies to every nominal mode. Add a configurable
+singularity margin with torque-level higher-order dynamics, numerical/domain
+checks and robot-free validation. Preserve saved overall CBF switches; disabling
+CBF bypasses these geometric constraints. Do not claim physical or unconditional
+avoidance guarantees. No physical FCI operation is authorized by this work.
+
+## Joystick duration and persistent force-hold override (2026-10-24)
+
+The owner now requests horizontal joystick directions for the Hand: right
+controller left closes/right opens; left controller right closes/left opens.
+Use fixed configurable speeds with a direction dead zone/hysteresis; travel
+is governed by held duration, not axis magnitude. Neutral cancels unfinished
+opening/closing and must not finish acquiring a grasp. A confirmed cable grasp
+keeps its configured force through neutral and Quest input/focus loss until an
+explicit outward/open command. Input loss stops unfinished motion and requires
+a fresh available neutral sample before accepting new movement. Cable diameter,
+acceptance tolerance and grasp force are configurable; force is unknown, so
+shipped configs leave it unset rather than asserting a cable-safe value.
+Use libfranka grasp plus is_grasped/width confirmation, with no close retries
+or automatic force increases. Preserve calibration, explicit hardware recovery,
+exclusive ownership and robot-free validation. Serialize cancellation against
+grasp completion so neutral cannot release an already completed grasp during
+readback. This supersedes side-grip/click/retry policies below. Updating wire
+axes, ROS messages, mock tests and APK build is within scope; device installation
+and physical operation remain operator actions.
+
 ## Joystick opening and responsive Hand control override (2026-10-23)
 
 The owner now requests one joystick press on each assigned Quest controller to

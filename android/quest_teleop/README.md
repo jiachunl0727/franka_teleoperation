@@ -42,9 +42,10 @@ Implementation:
 - `native_activity.cpp`: Android event/frame loop and app-to-USB adapter.
 
 UDP, Wi-Fi subscription/configuration, on-headset velocity differentiation,
-FR3 control, homing, and continuous gripper-width mapping are not part of this
-port. HMD/aim/thumbstick data are local diagnostics; wire packets retain the
-existing controller fields. Attribution and upstream licenses are retained in
+FR3 control and homing are not part of this port. HMD/aim data remain local
+diagnostics. Joystick axes and availability are sent to ROS, where mirrored
+horizontal directions control Hand opening/closing at fixed speed; neutral
+cancels unfinished motion and preserves a confirmed force grasp. Attribution and upstream licenses are retained in
 `THIRD_PARTY_LICENSES`.
 
 Robot-free adapter regression test, from the repository root:

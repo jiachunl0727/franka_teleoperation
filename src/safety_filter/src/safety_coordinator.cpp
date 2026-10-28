@@ -28,6 +28,14 @@ const char* safety_stop_name(SafetyStop r) noexcept {
   return "unknown";
 }
 bool CoordinatorParameters::valid() const noexcept {
+  for (double value : {result_joint_change, result_velocity_change, braking_acceleration,
+                       hold_stiffness, hold_damping, clearance_reserve, peer_motion_bound})
+    if (!std::isfinite(value) || value <= 0)
+      return false;
+  if (!worker_period_ns || maximum_result_age_ns < worker_period_ns ||
+      !maximum_worker_state_age_ns || !maximum_peer_age_ns || !model_grace_ns ||
+      model_grace_ns > maximum_peer_age_ns || braking_acceleration > 7.0)
+    return false;
   return (active[0] || active[1]) && maximum_age_ns > 0 && maximum_skew_ns > 0 &&
          maximum_skew_ns <= maximum_age_ns && result_deadline_ns > 0 && filter_deadline_ns > 0 &&
          filter_deadline_ns <= result_deadline_ns && maximum_failures > 0 &&
@@ -68,6 +76,20 @@ bool SafetyCoordinator::pump(uint64_t now) {
         new_[i] = true;
       }
     }
+  if (limits_.asynchronous) {
+    if (!now)
+      now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count();
+    if (last_worker_ns_ && now - last_worker_ns_ < limits_.worker_period_ns)
+      return false;
+    for (int i = 0; i < 2; ++i)
+      if (limits_.active[i] && (!new_[i] || !pending_[i].stamp_ns || pending_[i].stamp_ns > now ||
+                                now - pending_[i].stamp_ns > limits_.maximum_worker_state_age_ns))
+        return false;
+    last_worker_ns_ = now;
+    return process(limits_.active, filter_, failures_, now);
+  }
   if (independent_actuators_) {
     bool processed = false;
     for (int arm = 0; arm < 2 && stopped() == SafetyStop::none; ++arm)
@@ -95,6 +117,7 @@ bool SafetyCoordinator::process(const std::array<bool, 2>& active, cbf::CbfSafet
   cbf::Vector14d nominal = cbf::Vector14d::Zero();
   std::array<bool, 2> activity{};
   double period = .001;
+  double derivative_period = 0;
   SafetyReply reply;
   reply.started_ns = now;
   reply.finish = true;
@@ -107,10 +130,16 @@ bool SafetyCoordinator::process(const std::array<bool, 2>& active, cbf::CbfSafet
     if (active[i]) {
       const auto& p = pending_[i];
       if (!std::isfinite(p.period) || p.period <= 0 || p.period > .02) {
+        if (limits_.asynchronous)
+          return false;
         stop(SafetyStop::invalid_model);
         return false;
       }
-      if (!p.cycle || p.stamp_ns > now || now - p.stamp_ns > limits_.maximum_age_ns) {
+      if (!p.cycle || p.stamp_ns > now ||
+          now - p.stamp_ns > (limits_.asynchronous ? limits_.maximum_worker_state_age_ns
+                                                   : limits_.maximum_age_ns)) {
+        if (limits_.asynchronous)
+          return false;
         stop(SafetyStop::state_age);
         return false;
       }
@@ -122,19 +151,39 @@ bool SafetyCoordinator::process(const std::array<bool, 2>& active, cbf::CbfSafet
       period = std::min(period, p.period);
       reply.cycles[i] = p.cycle;
       reply.source_ns[i] = p.stamp_ns;
+      reply.epoch[i] = p.epoch;
+      reply.source_q[i] = p.state.q;
+      reply.source_dq[i] = p.state.dq;
+      if (limits_.asynchronous && last_source_ns_[i] && p.stamp_ns > last_source_ns_[i]) {
+        const double elapsed = (p.stamp_ns - last_source_ns_[i]) * 1e-9;
+        if (elapsed > .02)
+          filter.reset();
+        else
+          derivative_period = std::max(derivative_period, elapsed);
+      }
     }
   if (newest - oldest > limits_.maximum_skew_ns) {
+    if (limits_.asynchronous)
+      return false;
     stop(SafetyStop::state_skew);
     return false;
   }
+  reply.nominal = nominal;
+  if (limits_.asynchronous && derivative_period > 0)
+    period = derivative_period;
   reply.result = filter.filter(nominal, state, period, activity);
+  for (int i = 0; i < 2; ++i)
+    if (active[i])
+      last_source_ns_[i] = pending_[i].stamp_ns;
   filter_status_ = reply.result.solver_status;
-  if (reply.result.fatal_input_fault)
+  if (!limits_.asynchronous && reply.result.fatal_input_fault)
     stop(SafetyStop::invalid_model);
-  if (reply.result.filter_time_seconds * 1e9 > limits_.filter_deadline_ns)
+  if (!limits_.asynchronous && reply.result.fatal_solver_fault)
+    stop(SafetyStop::solver_failures);
+  if (!limits_.asynchronous && reply.result.filter_time_seconds * 1e9 > limits_.filter_deadline_ns)
     stop(SafetyStop::filter_deadline);
   failures = reply.result.solver_succeeded ? 0 : failures + 1;
-  if (failures >= limits_.maximum_failures)
+  if (!limits_.asynchronous && failures >= limits_.maximum_failures)
     stop(SafetyStop::solver_failures);
   reply.consecutive_failures = failures;
   reply.completed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(

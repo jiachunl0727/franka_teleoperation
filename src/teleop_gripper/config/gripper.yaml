@@ -1,9 +1,15 @@
 hand:
   open_width_m: -1.0  # -1 uses the calibrated maximum opening.
-  # Hold grip to close; release stops. A joystick click opens automatically.
-  close_width_m: 0.0       # Full finger gap lower bound; closing uses move(), not grasp().
-  close_retry_interval_ms: 200.0  # Held-close refresh period, independent of result; 0 disables refresh.
-  worker_poll_ms: 1.0     # Completion/retry/watchdog checks; release stop is event-driven.
-  open_speed_mps: 0.1    # Opening speed; closing keeps speed_mps below.
+  # Right: left closes/right opens. Left: right closes/left opens.
+  # Stick direction selects fixed speed; neutral stops unfinished movement.
+  joystick_engage: 0.4
+  joystick_neutral: 0.2
+  close_width_m: 0.0
+  cable_diameter_m: 0.005             # Expected cable gap; edit for the actual cable.
+  cable_diameter_tolerance_m: 0.002   # Acceptable compressed gap +/- this value.
+  grasp_force_n: -1.0                # REQUIRED: set a positive force in N; -1 disables closing.
+  worker_poll_ms: 1.0
+  open_speed_mps: 0.1
   speed_mps: 0.02
+  mock_object_width_m: 0.0  # Mock only: zero is empty; set e.g. .005 to simulate a cable.
 arm_settings: {}

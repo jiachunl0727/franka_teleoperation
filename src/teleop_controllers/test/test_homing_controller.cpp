@@ -268,3 +268,21 @@ TEST(Homing, RejectedGesturesReportReasonAndSuccessSurvivesInputLoss) {
   EXPECT_FALSE(home.active);
   EXPECT_FALSE(home.stop_failed);
 }
+
+TEST(Homing, ConfiguredHomeIsTheActualHomingGoal) {
+  ft::HomingParameters p;
+  p.home_joint_position[0] = .25;
+  ASSERT_TRUE(p.valid());
+  Fixture f(p);
+  f.request();
+  ft::HomingOutput out;
+  for (int i = 0; i < 20000; ++i) {
+    out = f.tick(true);
+    if (out.phase == ft::HomePhase::succeeded)
+      break;
+  }
+  EXPECT_EQ(out.phase, ft::HomePhase::succeeded);
+  EXPECT_NEAR(out.desired_q[0], .25, .01);
+  p.home_joint_position[3] = 0;
+  EXPECT_FALSE(p.valid());
+}

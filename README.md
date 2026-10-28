@@ -8,7 +8,7 @@ Use your installation's configured robot IPs, mapping, gains and geometry.
 New to the repository? The [documentation guide](docs/README.md) links the
 architecture, operation, monitoring and development instructions. The current
 pipeline holds measured joint position after normal trigger release and uses
-35% default torque/rate caps even with CBF disabled.
+35% default torque/rate caps and a shared-world table guard even with optional CBF disabled.
 
 | Terminal | Where commands run |
 | --- | --- |
@@ -75,7 +75,7 @@ restart the launch after changing settings.
 | `quest.bridge` | USB receiver port, bind address, namespace and clock/freshness limits; retain port `45454` with the current Quest app |
 | `arms.<arm_name>` | Actual `robot_ip`, controller assignment, namespace/base frame, input/output topics, calibrated basis, scales, trigger thresholds and mapper timing |
 | `controller` | Impedance gains, actuator limits/rate, tool envelope and homing speed/gains/stop settings |
-| `hand` | Closing/opening speeds, widths, grip thresholds and input timing |
+| `hand` | Finger speeds, cable diameter/tolerance, force, joystick thresholds and timing |
 | `cbf` | Torque/rate scales (always enforced), surveyed table height, clearances, obstacle spheres and solver failure limit |
 | `arm_settings.<arm_name>` | Per-arm controller/Hand overrides and `world_from_base_xyz_xyzw` transforms; names must match `arms` |
 | `recording` | `mode: menu/continuous`, namespace, Menu input/debounce, selected topics, output folder and storage plugin |
@@ -126,10 +126,10 @@ docker compose -f docker/android-compose.yaml run --rm quest-adb adb shell am br
 ```
 
 `adb devices` must list the authorized headset as `device`. The install helper
-also launches the app. Joystick opening requires the updated APK: older builds read joystick clicks locally
-but do not send them to ROS. Rebuild/reinstall after this update, rebuild all active
-ROS packages against the updated button message, and restart the pipeline. Older
-APK packets remain accepted for arm motion and side-grip closing.
+also launches the app. Joystick direction control requires the updated APK,
+which now sends both joystick axes and their availability. Rebuild/reinstall
+this APK, rebuild the ROS message and its consumers, and restart the pipeline.
+Older APK packets remain usable for arm motion but cannot actuate the Hand.
 
 For subsequent sessions with the updated APK, reuse it:
 
@@ -171,26 +171,36 @@ Hand worker accepted its readback. See
 | --- | --- |
 | Release trigger, then hold above its engage threshold (default 0.75) | Engage assigned arm at measured pose; controller motion changes its target |
 | Release below its release threshold (default 0.25) | Capture measured joints once and hold the whole arm configuration |
-| Hold the assigned grip / release it | Close progressively / stop moving |
-| Click the assigned joystick once | Open automatically to `hand.open_width_m` at `hand.open_speed_mps` |
+| Right joystick left / right | Close / open the right Hand at fixed speed while deflected |
+| Left joystick right / left | Close / open the left Hand at fixed speed while deflected |
+| Center joystick | Stop unfinished finger motion; preserve a confirmed cable force hold |
 | Right A / left X held at least one second, then released | Home assigned arm with trigger released and homing enabled |
 | Fresh left Menu presses | Start/stop an episode with `recording.mode: menu` |
 
 Ctrl+C stops bringup. Input loss/recenter requires trigger release/press before
 resuming. The manufacturer stop remains the physical emergency-stop mechanism.
 
-While grip remains held, its closing demand stays active and refreshes every
-`hand.close_retry_interval_ms` (default 200 ms; `0` disables refresh). This
-continues after success or an ordinary failed close, including at zero width;
-an active move runs uninterrupted and calls never overlap. Release
-cancels retries and requests stop immediately on receipt. Completion checks use
-`hand.worker_poll_ms` (default 1 ms); this is not the hardware command frequency.
-Repeated position commands do not guarantee gripping force. See
-[Hand timing and diagnostics](docs/TELEOPERATION_RUNTIME.md#command-timing-and-diagnosing-delay).
-If both joystick opening and further closing become unresponsive, inspect
-`gripper_events.calibrated` and `message`: a stop/device fault disables both
-until explicit empty-hand recalibration. See
-[Hand fault diagnosis and recovery](docs/TELEOPERATION_RUNTIME.md#when-joystick-opening-and-further-closing-both-stop-working).
+Configure `hand.cable_diameter_m`, `cable_diameter_tolerance_m`, and
+`grasp_force_n` for the actual cable. Force defaults to `-1` (unset): closing is
+disabled until a positive force is supplied; opening remains available. A 5 mm
+cable example is included in the YAML. Set the opening gap larger than the
+cable's accepted diameter range. Joystick displacement beyond the engage
+threshold selects direction only: fixed `speed_mps`/`open_speed_mps` and held
+duration determine travel. Side grip, joystick click and vertical deflection
+no longer command the Hand.
+
+Closing uses `grasp()` with the configured force. A successful command,
+`is_grasped` readback, and cable-width acceptance confirm a hold; empty closure
+and an out-of-range cable are rejected. Neutral cancels an unfinished grasp,
+so a brief inward nudge does not continue closing after release. A confirmed
+hold persists through neutral or Quest input loss until an outward command.
+Input faults stop unfinished motion and require a fresh neutral sample before
+new movement. There are no automatic close retries or force increases.
+
+`gripper_events` reports `holding`, `grasp_confirmed`, `neutral_required`, and
+`commanded_grasp_force_n` (the configured command, not measured force).
+Communication/state faults require explicit empty-hand recalibration. See
+[Hand control and recovery](docs/TELEOPERATION_RUNTIME.md#hand-joystick-control-and-force-holding).
 
 Normal trigger release selects joint position holding (`reason: position_hold`,
 `motion_enabled: false`). Hold stiffness ramps up over 0.25 s; joint damping
@@ -332,9 +342,18 @@ new recordings create their directories automatically. The reusable analysis
 code remains in `analysis/matlab/`. For formatting and robot-free validation,
 see [DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
-Hand closing now uses position motion (`move`), with `stop` on release.
-`hand.close_width_m` sets the lower gap bound; `speed_mps` sets closing speed.
-A joystick press opens immediately after its input is received and any preceding
-stop completes. `open_speed_mps` sets opening speed independently (default 0.1 m/s);
-closing debounce defaults to zero. Legacy grasp and double-click settings are unused.
-See [Hand control details](docs/TELEOPERATION_RUNTIME.md#hand-position-control-and-joystick-opening).
+Hand motion and stop commands run outside the arm torque loop. SDK/firmware
+latency still affects how quickly a finger stops; held duration is not an exact
+position measurement. See [Hand control details](docs/TELEOPERATION_RUNTIME.md#hand-joystick-control-and-force-holding).
+
+The Cartesian modes now support dynamically consistent nullspace torque toward
+`controller.home_joint_position`, shared with homing. The final CBF has an optional
+singularity barrier alongside joint limits. Both the overall CBF switch and
+`cbf.singularity_enabled` must be enabled for that barrier; saved overall switches
+are unchanged. See [configuration and formulation](docs/CBF_PANDA.md#nullspace-posture-and-singularity-constraint).
+
+Safety now defaults to asynchronous CBF-QP for both single and dual arms. Each
+1 kHz owner verifies candidates locally without waiting for the worker; ordinary
+worker failure brakes and holds with FCI retained. Recovery requires a fresh
+release/re-engagement. The mandatory world-table plane remains active when
+optional CBF constraints are disabled. See [safety execution and configuration](docs/CBF_PANDA.md).

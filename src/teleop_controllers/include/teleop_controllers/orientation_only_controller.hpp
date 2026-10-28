@@ -9,6 +9,7 @@ class OrientationOnlyController final : public TorqueController {
  public:
   explicit OrientationOnlyController(const CartesianImpedanceParameters& parameters)
       : impedance_(parameters) {}
+  void reset(const ArmState& state) noexcept override { impedance_.reset(state); }
   NominalTorque compute(const ArmState& state, const ControlReference& reference,
                         double period) noexcept override;
 

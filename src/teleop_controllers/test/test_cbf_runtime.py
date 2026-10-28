@@ -299,7 +299,7 @@ class CbfRuntimeTest(unittest.TestCase):
                     self.assertTrue(matches)
                     for right in matches:
                         left = paired[tuple(right.source_time_pc_monotonic_ns)]
-                        self.assertEqual(left.control_cycle, right.control_cycle)
+                        self.assertEqual(list(left.worker_source_cycle), list(right.worker_source_cycle))
                 finally:
                     if proc.poll() is None:
                         os.killpg(proc.pid, signal.SIGINT)
@@ -417,7 +417,7 @@ class CbfRuntimeTest(unittest.TestCase):
                     )
                     self.assertTrue(
                         all(
-                            s.solver_status == "disabled_actuator_bounds_only"
+                            s.mandatory_table_guard_enabled and s.execution == "asynchronous"
                             for s in safety
                         )
                     )

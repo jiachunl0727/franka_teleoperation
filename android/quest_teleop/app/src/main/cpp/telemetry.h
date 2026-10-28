@@ -6,6 +6,9 @@ namespace quest_usb {
 inline float unit_input(float value) {
   return std::isfinite(value) ? std::clamp(value, 0.0F, 1.0F) : 0.0F;
 }
+inline float signed_input(float value) {
+  return std::isfinite(value) ? std::clamp(value, -1.0F, 1.0F) : 0.0F;
+}
 struct Vector3 { float x, y, z; };
 struct Quaternion { float x, y, z, w; };
 
@@ -50,7 +53,8 @@ class QuestTelemetry {
         in.trigger, in.trigger_active, in.squeeze, in.squeeze_active,
         right && in.primary, right && in.primary_active, right && in.secondary, right && in.secondary_active,
         !right && in.primary, !right && in.primary_active, !right && in.secondary, !right && in.secondary_active,
-        !right && in.menu, !right && in.menu_active, in.thumb_click, in.thumb_click_active);
+        !right && in.menu, !right && in.menu_active, in.thumb_click, in.thumb_click_active,
+        in.thumb_x, in.thumb_y, in.thumb_active);
     }
   }
   UsbTransport transport_;
@@ -66,7 +70,8 @@ class QuestTelemetry {
                      bool linear_valid, bool angular_valid, float trigger, bool trigger_active,
                      float grip, bool grip_active, bool a, bool a_active, bool b, bool b_active,
                      bool x, bool x_active, bool y, bool y_active, bool menu, bool menu_active,
-                     bool thumb_click, bool thumb_click_active) {
+                     bool thumb_click, bool thumb_click_active,
+                     float thumb_x, float thumb_y, bool thumb_active) {
     std::ostringstream json;
     const uint64_t sequence = sequence_++;
     const ClockSnapshot clock = transport_.clock_snapshot(acquisition);
@@ -97,7 +102,11 @@ class QuestTelemetry {
          << ",\"grip\":" << unit_input(grip)
          << ",\"grip_active\":" << (grip_active ? "true" : "false")
          << ",\"thumbstick_click\":" << (thumb_click ? "true" : "false")
-         << ",\"thumbstick_click_active\":" << (thumb_click_active ? "true" : "false");
+         << ",\"thumbstick_click_active\":" << (thumb_click_active ? "true" : "false")
+         << ",\"thumbstick_xy\":[" << signed_input(thumb_x) << ',' << signed_input(thumb_y) << ']'
+         << ",\"thumbstick_active\":" <<
+             (thumb_active && std::isfinite(thumb_x) && std::isfinite(thumb_y) &&
+              std::abs(thumb_x) <= 1.0F && std::abs(thumb_y) <= 1.0F ? "true" : "false");
     if (std::strcmp(controller, "right") == 0) {
       json << ",\"button_a\":" << (a ? "true" : "false")
            << ",\"button_a_active\":" << (a_active ? "true" : "false")

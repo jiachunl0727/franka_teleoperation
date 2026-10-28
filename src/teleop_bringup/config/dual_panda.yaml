@@ -90,6 +90,15 @@ arms:
     trigger_engage: 0.75
     trigger_release: 0.25
 controller:
+  # Shared by homing and the nullspace posture preference; radians, Panda joint order.
+  home_joint_position: [0.0, -0.7854, 0.0, -2.3562, 0.0, 1.5708, 0.7854]
+  nullspace_enabled: true
+  nullspace_stiffness: 10.0          # Nm/rad
+  nullspace_damping: 6.324555320336759  # Nm s/rad
+  nullspace_joint_limit_gain: 2.0    # Nm, soft repulsion before the final CBF
+  nullspace_joint_limit_margin: 0.35  # rad
+  nullspace_max_torque: 5.0         # Nm; uniform scaling retains the projection
+  nullspace_ramp_seconds: 0.25
   lambda_translation: 15.0
   lambda_rotation: 15.0
   gain_translation: 50.0
@@ -111,23 +120,45 @@ controller:
   homing_stiffness: [300.0, 300.0, 300.0, 300.0, 120.0, 100.0, 50.0]
   homing_damping: [30.0, 30.0, 30.0, 30.0, 10.0, 10.0, 5.0]
 hand:
-  # Hold grip to close; release stops. A joystick click opens automatically.
-  close_width_m: 0.0       # Full finger gap lower bound; closing uses move(), not grasp().
-  close_retry_interval_ms: 200.0  # Held-close refresh period, independent of result; 0 disables refresh.
-  worker_poll_ms: 1.0     # Completion/retry/watchdog checks; release stop is event-driven.
-  open_speed_mps: 0.1    # Opening speed; closing keeps speed_mps below.
+  # Right: left closes/right opens. Left: right closes/left opens.
+  # Stick direction selects fixed speed; neutral stops unfinished movement.
+  joystick_engage: 0.4
+  joystick_neutral: 0.2
+  close_width_m: 0.0
+  cable_diameter_m: 0.005             # Expected cable gap; edit for the actual cable.
+  cable_diameter_tolerance_m: 0.002   # Acceptable compressed gap +/- this value.
+  grasp_force_n: -1.0                # REQUIRED: set a positive force in N; -1 disables closing.
+  worker_poll_ms: 1.0
+  open_speed_mps: 0.1
   speed_mps: 0.05
   open_width_m: 0.025
-  grip_press: 0.75
-  grip_release: 0.25
-  grip_debounce_ms: 0.0
   command_timeout_ms: 100.0
   max_clock_uncertainty_ms: 10.0
   mock_operation_duration_ms: 100.0
 cbf:
+  # Background QP; each callback verifies/repairs locally and never waits for it.
+  execution: asynchronous
+  worker_period_ms: 5.0
+  maximum_result_age_ms: 50.0
+  maximum_worker_state_age_ms: 20.0
+  maximum_peer_age_ms: 10.0
+  maximum_worker_skew_ms: 5.0
+  recovery_dwell_ms: 100.0
+  model_grace_ms: 3.0
+  braking_acceleration: 2.0       # rad/s^2, desired fallback joint deceleration
+  fallback_hold_stiffness: 120.0  # Nm/rad
+  fallback_hold_damping: 22.0     # Nm s/rad
+  guard_clearance_reserve: 0.005  # m, additional local-model reserve
+  peer_motion_bound_mps: 22.0     # m/s, displacement reserve for peer-state age
+  # Active only when the overall CBF is enabled; thresholds need commissioning.
+  singularity_enabled: true
+  singularity_minimum_manipulability: 0.05  # sqrt(det(Js Js^T)), dimensionless
+  singularity_characteristic_length: 0.3   # m; Js linear rows = J_linear / length
+  singularity_cbf_frequency: 8.0           # s^-1, critically damped barrier
   # Actuator scales apply even with cbf_enabled:false. Controller caps can tighten them.
   torque_limit_scale: 0.35       # -> joints 1-4: 30.45 Nm; joints 5-7: 4.2 Nm
   torque_rate_limit_scale: 0.35  # -> 350 Nm/s; restart bringup after editing
+  # Mandatory shared world-z plane, active even when the optional CBF is off.
   table_height: 0.0
   table_minimum_clearance: 0.02
   self_minimum_clearance: 0.03

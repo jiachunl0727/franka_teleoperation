@@ -1,4 +1,13 @@
 controller:
+  # Shared by homing and the nullspace posture preference; radians, Panda joint order.
+  home_joint_position: [0.0, -0.7854, 0.0, -2.3562, 0.0, 1.5708, 0.7854]
+  nullspace_enabled: true
+  nullspace_stiffness: 10.0          # Nm/rad
+  nullspace_damping: 6.324555320336759  # Nm s/rad
+  nullspace_joint_limit_gain: 2.0    # Nm, soft repulsion before the final CBF
+  nullspace_joint_limit_margin: 0.35  # rad
+  nullspace_max_torque: 5.0         # Nm; uniform scaling retains the projection
+  nullspace_ramp_seconds: 0.25
   lambda_translation: 50.0
   lambda_rotation: 40.0
   gain_translation: 20.0

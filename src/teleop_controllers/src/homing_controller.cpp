@@ -23,6 +23,11 @@ const char* home_phase_name(HomePhase phase) noexcept {
   }
 }
 bool HomingParameters::valid() const noexcept {
+  for (int j = 0; j < 7; ++j)
+    if (!std::isfinite(home_joint_position[j]) ||
+        home_joint_position[j] <= safety_filter::kJointLower[j] ||
+        home_joint_position[j] >= safety_filter::kJointUpper[j])
+      return false;
   const double values[] = {speed_factor,       position_tolerance, velocity_tolerance,
                            completion_timeout, stop_duration,      stop_acceleration,
                            stop_timeout};
@@ -128,8 +133,7 @@ HomingOutput HomingController::update(const ArmState& s, uint64_t now, double dt
       within_limits &=
           s.q[j] >= safety_filter::kJointLower[j] && s.q[j] <= safety_filter::kJointUpper[j];
     if (within_limits) {
-      trajectory_.emplace(p_.speed_factor, s.q,
-                          Eigen::Map<const Vector7>(safety_filter::kHome.data()));
+      trajectory_.emplace(p_.speed_factor, s.q, p_.home_joint_position);
       desired_q_ = s.q;
       desired_dq_.setZero();
       filtered_dq_ = s.dq;
@@ -141,7 +145,7 @@ HomingOutput HomingController::update(const ArmState& s, uint64_t now, double dt
       message_ = "start joints outside FER limits";
     }
   }
-  const Vector7 home = Eigen::Map<const Vector7>(safety_filter::kHome.data());
+  const Vector7& home = p_.home_joint_position;
   bool trajectory_complete = false;
   if (phase_ == HomePhase::homing) {
     if (cancel_requested_)

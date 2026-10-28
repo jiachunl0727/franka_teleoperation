@@ -11,6 +11,7 @@
 #include <sstream>
 
 #include "safety_filter/panda_limits.hpp"
+#include "safety_filter/singularity.hpp"
 
 namespace safety_filter::cbf {
 namespace {
@@ -46,6 +47,19 @@ bool finitePositive(const Vector7d& value) {
   return value.allFinite() && (value.array() > 0.0).all();
 }
 
+// AABB distance is a lower bound on segment distance. Require separation beyond
+// both the activation threshold and the best exact clearance already found:
+// pruning then preserves every active row AND the exact minimum diagnostic.
+bool boundsDistanceExceeds(const Eigen::Vector3d& first_min, const Eigen::Vector3d& first_max,
+                           const Eigen::Vector3d& second_min, const Eigen::Vector3d& second_max,
+                           double distance) {
+  const Eigen::Vector3d gap =
+      (first_min - second_max).cwiseMax(second_min - first_max).cwiseMax(0.0);
+  // Bias roundoff toward an exact check at a threshold, never toward exclusion.
+  const double conservative_distance = distance + 1e-10;
+  return gap.squaredNorm() > conservative_distance * conservative_distance;
+}
+
 }  // namespace
 
 CbfSafetyFilter::~CbfSafetyFilter() { cleanupSolver(); }
@@ -59,10 +73,19 @@ void CbfSafetyFilter::cleanupSolver() {
 
 bool CbfSafetyFilter::configure(const SafetyParameters& parameters,
                                 const std::array<ArmIdentity, kArmCount>& identities,
-                                std::string* error) {
+                                std::string* error, bool prepare_solver) {
   cleanupSolver();
   parameters_ = parameters;
   identities_ = identities;
+  for (double v :
+       {parameters_.singularity_minimum_manipulability,
+        parameters_.singularity_characteristic_length, parameters_.singularity_cbf_frequency}) {
+    if (!std::isfinite(v) || v <= 0) {
+      if (error)
+        *error = "invalid singularity CBF parameter";
+      return false;
+    }
+  }
 
   const bool invalid =
       (!parameters_.active_arms[0] && !parameters_.active_arms[1]) ||
@@ -227,21 +250,24 @@ bool CbfSafetyFilter::configure(const SafetyParameters& parameters,
   joint_position_row_begin_ = actuator_row_begin_ + kDualArmDof;
   joint_velocity_row_begin_ = joint_position_row_begin_ + 2 * kDualArmDof;
   joint_acceleration_row_begin_ = joint_velocity_row_begin_ + 2 * kDualArmDof;
-  table_row_begin_ = joint_acceleration_row_begin_ + kDualArmDof;
+  singularity_row_begin_ = joint_acceleration_row_begin_ + kDualArmDof;
+  table_row_begin_ = singularity_row_begin_ + kArmCount;
   self_row_begin_ = table_row_begin_ + kArmCount * static_cast<int>(capsules_.size());
   inter_arm_row_begin_ = self_row_begin_ + kArmCount * static_cast<int>(self_pairs_.size());
   obstacle_row_begin_ = inter_arm_row_begin_ + static_cast<int>(inter_arm_pairs_.size());
   constraint_count_ =
       obstacle_row_begin_ + kArmCount * static_cast<int>(capsules_.size() * obstacles_.size());
+  active_constraint_rows_.clear();
+  active_constraint_rows_.reserve(constraint_count_);
 
   previous_constraint_jacobians_.assign(constraint_count_, PointJacobian::Zero());
   previous_constraint_jacobian_valid_.assign(constraint_count_, false);
   previous_collision_normals_.assign(constraint_count_, Eigen::Vector3d::UnitX());
   previous_collision_normal_valid_.assign(constraint_count_, false);
-  return setupSolver(error);
+  return setupSolver(error, prepare_solver);
 }
 
-bool CbfSafetyFilter::setupSolver(std::string* error) {
+bool CbfSafetyFilter::setupSolver(std::string* error, bool prepare_solver) {
   p_values_.resize(kDualArmDof);
   p_rows_.resize(kDualArmDof);
   p_columns_.resize(kDualArmDof + 1);
@@ -269,9 +295,12 @@ bool CbfSafetyFilter::setupSolver(std::string* error) {
     } else if (row < joint_acceleration_row_begin_) {
       arm = (row - joint_velocity_row_begin_) / (2 * kJointsPerArm);
       enabled = parameters_.joint_velocity_enabled;
-    } else if (row < table_row_begin_) {
+    } else if (row < singularity_row_begin_) {
       arm = (row - joint_acceleration_row_begin_) / kJointsPerArm;
       enabled = parameters_.joint_acceleration_enabled;
+    } else if (row < table_row_begin_) {
+      arm = row - singularity_row_begin_;
+      enabled = parameters_.singularity_enabled;
     } else if (row < self_row_begin_) {
       arm = (row - table_row_begin_) / static_cast<int>(capsules_.size());
       const int capsule = (row - table_row_begin_) % static_cast<int>(capsules_.size());
@@ -337,6 +366,10 @@ bool CbfSafetyFilter::setupSolver(std::string* error) {
   data_.q = linear_cost_.data();
   data_.l = solver_lower_bound_.data();
   data_.u = solver_upper_bound_.data();
+  if (!prepare_solver) {
+    reset();
+    return true;
+  }
 
   osqp_set_default_settings(&settings_);
   settings_.verbose = false;
@@ -392,12 +425,14 @@ void CbfSafetyFilter::reset() {
 
 void CbfSafetyFilter::clearRows() {
   invalid_constraint_ = false;
+  active_constraint_rows_.clear();
   std::fill(a_values_.begin(), a_values_.end(), 0.0);
   std::fill(lower_bound_.begin(), lower_bound_.end(), -OSQP_INFTY);
   std::fill(upper_bound_.begin(), upper_bound_.end(), OSQP_INFTY);
 }
 
 void CbfSafetyFilter::setRow(int row, const Vector14d& coefficients, double lower, double upper) {
+  active_constraint_rows_.push_back(row);
   if (!coefficients.allFinite() || !std::isfinite(lower) || !std::isfinite(upper) ||
       lower > upper) {
     invalid_constraint_ = true;
@@ -415,7 +450,8 @@ void CbfSafetyFilter::setRow(int row, const Vector14d& coefficients, double lowe
 }
 
 void CbfSafetyFilter::disableRow(int row) {
-  setRow(row, Vector14d::Zero(), -OSQP_INFTY, OSQP_INFTY);
+  // clearRows() already cleared coefficients/bounds. Only derivative history
+  // needs invalidating when a distance-activated row leaves the active set.
   previous_constraint_jacobian_valid_[row] = false;
 }
 
@@ -461,9 +497,12 @@ CbfSafetyFilter::Endpoint CbfSafetyFilter::endpoint(int arm, int frame_index,
 CbfSafetyFilter::WorldCapsule CbfSafetyFilter::worldCapsule(int arm, const Capsule& capsule,
                                                             const ArmState& state) const {
   const Eigen::Vector3d half_axis = 0.5 * capsule.length * capsule.direction.normalized();
-  return {endpoint(arm, capsule.frame_index, capsule.center - half_axis, state),
-          endpoint(arm, capsule.frame_index, capsule.center + half_axis, state), capsule.radius,
-          capsule.link_index};
+  WorldCapsule result{endpoint(arm, capsule.frame_index, capsule.center - half_axis, state),
+                      endpoint(arm, capsule.frame_index, capsule.center + half_axis, state),
+                      capsule.radius, capsule.link_index};
+  result.bounds_min = result.first.position.cwiseMin(result.second.position);
+  result.bounds_max = result.first.position.cwiseMax(result.second.position);
+  return result;
 }
 
 std::pair<double, double> CbfSafetyFilter::closestSegmentParameters(const Eigen::Vector3d& p1,
@@ -555,6 +594,8 @@ void CbfSafetyFilter::buildConstraints(const DualArmState& state, double period_
   Vector14d coriolis = Vector14d::Zero();
   Vector14d velocity = Vector14d::Zero();
   for (int arm = 0; arm < kArmCount; ++arm) {
+    if (!parameters_.active_arms[arm])
+      continue;
     inverse_mass.block<kJointsPerArm, kJointsPerArm>(arm * kJointsPerArm, arm * kJointsPerArm) =
         state.arm[arm].mass.ldlt().solve(Matrix7d::Identity());
     coriolis.segment<kJointsPerArm>(arm * kJointsPerArm) = state.arm[arm].coriolis;
@@ -652,10 +693,55 @@ void CbfSafetyFilter::buildConstraints(const DualArmState& state, double period_
     }
   }
 
-  std::array<std::array<WorldCapsule, kCapsuleCount>, kArmCount> world_capsules{};
   for (int arm = 0; arm < kArmCount; ++arm) {
+    const int row = singularity_row_begin_ + arm;
+    if (!parameters_.singularity_enabled || !parameters_.active_arms[arm]) {
+      disableRow(row);
+      continue;
+    }
+    const auto measure =
+        singularity_measure(state.arm[arm], parameters_.singularity_characteristic_length);
+    const double minimum_squared = std::pow(parameters_.singularity_minimum_manipulability, 2);
+    const double h = measure.value / minimum_squared - 1.0;
+    const Vector7d gradient = measure.gradient / minimum_squared;
+    const double hdot = gradient.dot(state.arm[arm].dq);
+    const double omega = parameters_.singularity_cbf_frequency;
+    result->manipulability[arm] = std::sqrt(measure.value);
+    // The exponential relative-degree-two barrier requires both h >= 0 and
+    // hdot + omega*h >= 0 initially. Do not claim recovery from outside it.
+    if (!measure.valid || h < -1e-6 || hdot + omega * h < -1e-6) {
+      result->singularity_state_invalid = true;
+      if (!guard_recovery_ || !measure.valid) {
+        disableRow(row);
+        continue;
+      }
+    }
+    const Matrix7d inverse = inverse_mass.block<7, 7>(arm * 7, arm * 7);
+    Vector14d coefficients = Vector14d::Zero();
+    coefficients.segment<7>(arm * 7) = inverse * gradient;
+    const double drift = measure.velocity_curvature / minimum_squared -
+                         gradient.dot(inverse * state.arm[arm].coriolis);
+    addLowerConstraint(row, coefficients, -drift - 2 * omega * hdot - omega * omega * h, true,
+                       &result->active_constraints);
+    ++result->singularity_constraints;
+  }
+
+  std::array<std::array<WorldCapsule, kCapsuleCount>, kArmCount> world_capsules{};
+  const bool inter_arm_enabled = parameters_.inter_arm_collision_enabled &&
+                                 parameters_.active_arms[0] && parameters_.active_arms[1];
+  const bool obstacles_enabled = parameters_.obstacle_collision_enabled && !obstacles_.empty();
+  for (int arm = 0; arm < kArmCount; ++arm) {
+    if (!parameters_.active_arms[arm])
+      continue;
     for (size_t capsule = 0; capsule < capsules_.size(); ++capsule) {
+      const bool table_capsule =
+          parameters_.table_enabled &&
+          capsules_[capsule].link_index >= parameters_.table_minimum_link_index;
+      if (!table_capsule && !parameters_.self_collision_enabled && !inter_arm_enabled &&
+          !obstacles_enabled)
+        continue;
       world_capsules[arm][capsule] = worldCapsule(arm, capsules_[capsule], state.arm[arm]);
+      ++result->geometry_work.capsule_transforms;
     }
   }
 
@@ -713,19 +799,20 @@ void CbfSafetyFilter::buildConstraints(const DualArmState& state, double period_
 
   row = table_row_begin_;
   for (int arm = 0; arm < kArmCount; ++arm) {
+    if (!parameters_.active_arms[arm] || !parameters_.table_enabled) {
+      row += static_cast<int>(capsules_.size());
+      continue;
+    }
     for (size_t capsule = 0; capsule < capsules_.size(); ++capsule, ++row) {
+      if (capsules_[capsule].link_index < parameters_.table_minimum_link_index)
+        continue;
       const WorldCapsule& current = world_capsules[arm][capsule];
       const Endpoint& lowest =
           current.first.position.z() < current.second.position.z() ? current.first : current.second;
       const double clearance = lowest.position.z() - current.radius - parameters_.table_height -
-                               parameters_.table_minimum_clearance;
-      if (parameters_.active_arms[arm] &&
-          current.link_index >= parameters_.table_minimum_link_index) {
-        result->minimum_table_clearance = std::min(result->minimum_table_clearance, clearance);
-      }
-      const bool active = parameters_.active_arms[arm] && parameters_.table_enabled &&
-                          current.link_index >= parameters_.table_minimum_link_index &&
-                          clearance <= parameters_.collision_activation_distance;
+                               parameters_.table_minimum_clearance - guard_reserve_;
+      result->minimum_table_clearance = std::min(result->minimum_table_clearance, clearance);
+      const bool active = guard_recovery_ || clearance <= parameters_.collision_activation_distance;
       if (!active) {
         disableRow(row);
         continue;
@@ -745,9 +832,24 @@ void CbfSafetyFilter::buildConstraints(const DualArmState& state, double period_
 
   row = self_row_begin_;
   for (int arm = 0; arm < kArmCount; ++arm) {
+    if (!parameters_.active_arms[arm] || !parameters_.self_collision_enabled) {
+      row += static_cast<int>(self_pairs_.size());
+      continue;
+    }
     for (const auto& pair : self_pairs_) {
       const WorldCapsule& first = world_capsules[arm][pair.first];
       const WorldCapsule& second = world_capsules[arm][pair.second];
+      const double padding =
+          first.radius + second.radius + parameters_.self_minimum_clearance + guard_reserve_;
+      if (boundsDistanceExceeds(first.bounds_min, first.bounds_max, second.bounds_min,
+                                second.bounds_max,
+                                padding + std::max(parameters_.collision_activation_distance,
+                                                   result->minimum_self_clearance))) {
+        ++result->geometry_work.broadphase_rejections;
+        disableRow(row++);
+        continue;
+      }
+      ++result->geometry_work.self_pair_distances;
       const auto parameters =
           closestSegmentParameters(first.first.position, first.second.position,
                                    second.first.position, second.second.position);
@@ -758,12 +860,10 @@ void CbfSafetyFilter::buildConstraints(const DualArmState& state, double period_
           parameters.second * (second.second.position - second.first.position);
       const Eigen::Vector3d separation = first_point - second_point;
       const double distance = separation.norm();
-      const double clearance =
-          distance - first.radius - second.radius - parameters_.self_minimum_clearance;
-      if (parameters_.active_arms[arm])
-        result->minimum_self_clearance = std::min(result->minimum_self_clearance, clearance);
-      if (!parameters_.active_arms[arm] || !parameters_.self_collision_enabled ||
-          clearance > parameters_.collision_activation_distance) {
+      const double clearance = distance - first.radius - second.radius -
+                               parameters_.self_minimum_clearance - guard_reserve_;
+      result->minimum_self_clearance = std::min(result->minimum_self_clearance, clearance);
+      if (clearance > parameters_.collision_activation_distance) {
         disableRow(row++);
         continue;
       }
@@ -778,55 +878,83 @@ void CbfSafetyFilter::buildConstraints(const DualArmState& state, double period_
   }
 
   row = inter_arm_row_begin_;
-  for (const auto& pair : inter_arm_pairs_) {
-    const WorldCapsule& first = world_capsules[0][pair.first];
-    const WorldCapsule& second = world_capsules[1][pair.second];
-    const auto parameters = closestSegmentParameters(first.first.position, first.second.position,
-                                                     second.first.position, second.second.position);
-    const Eigen::Vector3d first_point =
-        first.first.position + parameters.first * (first.second.position - first.first.position);
-    const Eigen::Vector3d second_point =
-        second.first.position +
-        parameters.second * (second.second.position - second.first.position);
-    const Eigen::Vector3d separation = first_point - second_point;
-    const double distance = separation.norm();
-    const double clearance =
-        distance - first.radius - second.radius - parameters_.inter_arm_minimum_clearance;
-    if (parameters_.active_arms[0] && parameters_.active_arms[1])
+  if (inter_arm_enabled) {
+    for (const auto& pair : inter_arm_pairs_) {
+      const WorldCapsule& first = world_capsules[0][pair.first];
+      const WorldCapsule& second = world_capsules[1][pair.second];
+      const double padding = first.radius + second.radius +
+                             parameters_.inter_arm_minimum_clearance + guard_reserve_ +
+                             guard_peer_reserve_;
+      if (boundsDistanceExceeds(first.bounds_min, first.bounds_max, second.bounds_min,
+                                second.bounds_max,
+                                padding + std::max(parameters_.collision_activation_distance,
+                                                   result->minimum_inter_arm_clearance))) {
+        ++result->geometry_work.broadphase_rejections;
+        disableRow(row++);
+        continue;
+      }
+      ++result->geometry_work.inter_arm_pair_distances;
+      const auto parameters =
+          closestSegmentParameters(first.first.position, first.second.position,
+                                   second.first.position, second.second.position);
+      const Eigen::Vector3d first_point =
+          first.first.position + parameters.first * (first.second.position - first.first.position);
+      const Eigen::Vector3d second_point =
+          second.first.position +
+          parameters.second * (second.second.position - second.first.position);
+      const Eigen::Vector3d separation = first_point - second_point;
+      const double distance = separation.norm();
+      const double clearance = distance - first.radius - second.radius -
+                               parameters_.inter_arm_minimum_clearance - guard_reserve_ -
+                               guard_peer_reserve_;
       result->minimum_inter_arm_clearance =
           std::min(result->minimum_inter_arm_clearance, clearance);
-    if (!parameters_.active_arms[0] || !parameters_.active_arms[1] ||
-        !parameters_.inter_arm_collision_enabled ||
-        clearance > parameters_.collision_activation_distance) {
-      disableRow(row++);
-      continue;
+      if (clearance > parameters_.collision_activation_distance) {
+        disableRow(row++);
+        continue;
+      }
+      const PointJacobian first_jacobian =
+          first.first.jacobian + parameters.first * (first.second.jacobian - first.first.jacobian);
+      const PointJacobian second_jacobian =
+          second.first.jacobian +
+          parameters.second * (second.second.jacobian - second.first.jacobian);
+      collision_row(row++, separation, first_jacobian - second_jacobian, clearance, distance, true,
+                    &result->inter_arm_constraints);
     }
-    const PointJacobian first_jacobian =
-        first.first.jacobian + parameters.first * (first.second.jacobian - first.first.jacobian);
-    const PointJacobian second_jacobian =
-        second.first.jacobian +
-        parameters.second * (second.second.jacobian - second.first.jacobian);
-    collision_row(row++, separation, first_jacobian - second_jacobian, clearance, distance, true,
-                  &result->inter_arm_constraints);
   }
 
   row = obstacle_row_begin_;
+  if (!obstacles_enabled)
+    return;
   for (int arm = 0; arm < kArmCount; ++arm) {
+    if (!parameters_.active_arms[arm]) {
+      row += static_cast<int>(capsules_.size() * obstacles_.size());
+      continue;
+    }
     for (const WorldCapsule& capsule : world_capsules[arm]) {
       for (const Obstacle& obstacle : obstacles_) {
+        const double padding = capsule.radius + obstacle.radius +
+                               parameters_.obstacle_minimum_clearance + guard_reserve_;
+        if (boundsDistanceExceeds(capsule.bounds_min, capsule.bounds_max, obstacle.center,
+                                  obstacle.center,
+                                  padding + std::max(parameters_.collision_activation_distance,
+                                                     result->minimum_obstacle_clearance))) {
+          ++result->geometry_work.broadphase_rejections;
+          disableRow(row++);
+          continue;
+        }
+        ++result->geometry_work.obstacle_distances;
         const double segment =
             pointSegmentParameter(obstacle.center, capsule.first.position, capsule.second.position);
         const Eigen::Vector3d point =
             capsule.first.position + segment * (capsule.second.position - capsule.first.position);
         const Eigen::Vector3d separation = point - obstacle.center;
         const double distance = separation.norm();
-        const double clearance =
-            distance - capsule.radius - obstacle.radius - parameters_.obstacle_minimum_clearance;
-        if (parameters_.active_arms[arm])
-          result->minimum_obstacle_clearance =
-              std::min(result->minimum_obstacle_clearance, clearance);
-        if (!parameters_.active_arms[arm] || !parameters_.obstacle_collision_enabled ||
-            clearance > parameters_.collision_activation_distance) {
+        const double clearance = distance - capsule.radius - obstacle.radius -
+                                 parameters_.obstacle_minimum_clearance - guard_reserve_;
+        result->minimum_obstacle_clearance =
+            std::min(result->minimum_obstacle_clearance, clearance);
+        if (clearance > parameters_.collision_activation_distance) {
           disableRow(row++);
           continue;
         }
@@ -873,6 +1001,11 @@ SafetyResult CbfSafetyFilter::filter(const Vector14d& nominal_torque,
   SafetyResult result;
   const auto begin = std::chrono::steady_clock::now();
   const auto finish = [&] {
+    // Damping fallback is actuator-bounded, but does not certify the new
+    // singularity barrier. Terminate ownership on an uncertified result.
+    if (parameters_.enabled && parameters_.singularity_enabled && result.fallback_active &&
+        !result.fatal_input_fault)
+      result.fatal_solver_fault = true;
     result.filter_time_seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
     return result;
@@ -939,6 +1072,11 @@ SafetyResult CbfSafetyFilter::filter(const Vector14d& nominal_torque,
   }
 
   buildConstraints(state, period_seconds, &result);
+  if (result.singularity_state_invalid) {
+    result.fallback_active = result.fatal_input_fault = true;
+    result.solver_status = "outside_singularity_barrier_domain_or_invalid_kinematics";
+    return finish();  // Owner terminates; placeholder must not be sent.
+  }
   if (invalid_constraint_) {
     result.fallback_active = result.fatal_input_fault = true;
     result.solver_status = "invalid_active_constraint";
@@ -962,7 +1100,7 @@ SafetyResult CbfSafetyFilter::filter(const Vector14d& nominal_torque,
       return std::numeric_limits<double>::infinity();
     }
     double maximum = 0.0;
-    for (int constraint = 0; constraint < constraint_count_; ++constraint) {
+    for (int constraint : active_constraint_rows_) {
       double value = 0.0;
       for (int joint = 0; joint < kDualArmDof; ++joint) {
         value += a_values_[joint * constraint_count_ + constraint] * torque(joint);

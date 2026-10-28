@@ -1,0 +1,319 @@
+#include <gtest/gtest.h>
+
+#include <chrono>
+#include <future>
+#include <thread>
+
+#include "safety_filter/async_safety.hpp"
+#include "safety_filter/panda_limits.hpp"
+#include "safety_filter/panda_model_fixture.hpp"
+namespace sf = safety_filter;
+namespace {
+constexpr uint64_t start = 1000000000;
+std::array<sf::cbf::ArmIdentity, 2> identities() {
+  std::array<sf::cbf::ArmIdentity, 2> ids;
+  ids[0].arm_id = "left";
+  ids[0].base_frame = "left/base";
+  ids[1].arm_id = "right";
+  ids[1].base_frame = "right/base";
+  ids[1].world_from_base.translation().x() = 2;
+  return ids;
+}
+sf::ModelRequest request(int cycle = 1) {
+  sf::ModelRequest r;
+  r.cycle = cycle;
+  r.stamp_ns = start + cycle * 1000000;
+  r.epoch = 1;
+  r.state = sf::panda_model_fixture(Eigen::Map<const sf::cbf::Vector7d>(sf::kHome.data()));
+  return r;
+}
+sf::SafetyReply success(const sf::ModelRequest& r, int arm = 0) {
+  sf::SafetyReply reply;
+  reply.cycles[arm] = r.cycle;
+  reply.source_ns[arm] = r.stamp_ns;
+  reply.completed_ns = r.stamp_ns;
+  reply.epoch[arm] = r.epoch;
+  reply.source_q[arm] = r.state.q;
+  reply.source_dq[arm] = r.state.dq;
+  reply.nominal.segment<7>(arm * 7) = r.nominal;
+  reply.result.safe_torque = reply.nominal;
+  reply.result.solver_succeeded = true;
+  return reply;
+}
+struct Fixture {
+  sf::CoordinatorParameters limits;
+  sf::cbf::SafetyParameters safety;
+  sf::AsyncSafetyController local;
+  Fixture(bool enabled = true, bool dual = false) {
+    limits.asynchronous = true;
+    limits.active = {true, dual};
+    safety.active_arms = limits.active;
+    safety.enabled = enabled;
+    safety.self_collision_enabled = safety.inter_arm_collision_enabled = false;
+  }
+  void configure(int arm = 0, const std::array<sf::cbf::ArmIdentity, 2>& ids = identities()) {
+    std::string error;
+    ASSERT_TRUE(local.configure(arm, limits, safety, ids, &error)) << error;
+  }
+};
+}  // namespace
+TEST(AsyncSafety, PendingModeDoesNotDisarmEveryEngagementAndNeverUsesOldEpoch) {
+  Fixture f;
+  f.configure();
+  auto r = request();
+  r.motion_active = true;
+  r.nominal[0] = .1;
+  auto old = success(r);
+  old.epoch[0] = 0;
+  old.result.safe_torque[0] = .3;
+  auto out = f.local.update(r, nullptr, &old, r.stamp_ns);
+  EXPECT_FALSE(out.worker_usable);
+  EXPECT_FALSE(out.degraded);
+  EXPECT_NEAR(out.reply.result.safe_torque[0], 0, 1e-9);
+  r = request(6);
+  r.motion_active = true;
+  r.nominal[0] = .1;
+  auto current = success(r);
+  out = f.local.update(r, nullptr, &current, r.stamp_ns);
+  EXPECT_TRUE(out.worker_usable);
+  EXPECT_FALSE(out.degraded);
+  EXPECT_NEAR(out.reply.result.safe_torque[0], .1, 1e-9);
+  // Release/mode change cannot reuse a torque from the active context.
+  r = request(7);
+  r.epoch = 2;
+  out = f.local.update(r, nullptr, nullptr, r.stamp_ns);
+  EXPECT_FALSE(out.worker_usable);
+  EXPECT_NEAR(out.reply.result.safe_torque[0], 0, 1e-9);
+}
+TEST(AsyncSafety, FailedWorkerBrakesAndHoldsUntilReleaseReengagementAndHealthyDwell) {
+  Fixture f;
+  f.limits.recovery_dwell_ns = 2000000;
+  f.configure();
+  auto r = request();
+  r.motion_active = true;
+  r.state.dq[0] = .1;
+  auto failed = success(r);
+  failed.result.solver_succeeded = false;
+  failed.result.fallback_active = true;
+  auto out = f.local.update(r, nullptr, &failed, r.stamp_ns);
+  EXPECT_TRUE(out.degraded);
+  EXPECT_TRUE(out.entered_degraded);
+  EXPECT_LT(out.reply.result.safe_torque[0], 0);
+  EXPECT_FALSE(out.reply.result.fatal_solver_fault);
+  // Healthy results and held trigger alone cannot resume tracking.
+  for (int i = 2; i < 8; ++i) {
+    r = request(i);
+    r.motion_active = true;
+    auto ok = success(r);
+    out = f.local.update(r, nullptr, &ok, r.stamp_ns);
+    EXPECT_TRUE(out.degraded);
+  }
+  r = request(8);
+  r.release_source_ns = r.stamp_ns;
+  r.epoch = 2;
+  auto ok = success(r);
+  out = f.local.update(r, nullptr, &ok, r.stamp_ns);
+  EXPECT_TRUE(out.degraded);
+  for (int i = 9; i < 14; ++i) {
+    r = request(i);
+    r.motion_active = true;
+    r.release_source_ns = start + 8000000;
+    r.epoch = 3;
+    ok = success(r);
+    out = f.local.update(r, nullptr, &ok, r.stamp_ns);
+  }
+  EXPECT_FALSE(out.degraded);
+  EXPECT_TRUE(out.worker_usable);
+}
+TEST(AsyncSafety, ExpiredAndOutOfOrderResultsDoNotRefreshTheirSourceAge) {
+  Fixture f;
+  f.configure();
+  auto r = request();
+  r.motion_active = true;
+  auto old = success(r);
+  f.local.update(r, nullptr, &old, r.stamp_ns);
+  r = request(60);
+  r.motion_active = true;
+  old.completed_ns = r.stamp_ns;
+  auto out = f.local.update(r, nullptr, &old, r.stamp_ns);
+  EXPECT_FALSE(out.worker_usable);
+  EXPECT_TRUE(out.degraded);
+  EXPECT_EQ(out.worker_age_ns, 59000000u);
+  auto newer = success(r);
+  f.local.update(r, nullptr, &newer, r.stamp_ns);
+  r = request(61);
+  r.motion_active = true;
+  out = f.local.update(r, nullptr, &old, r.stamp_ns);
+  EXPECT_TRUE(out.worker_usable);
+  EXPECT_EQ(out.worker_age_ns, 1000000u);
+}
+TEST(AsyncSafety, WorldTableRemainsMandatoryWithCbfDisabledAndProtectsLinksNotJustTool) {
+  Fixture f(false);
+  f.safety.table_height = .1;
+  f.configure();
+  auto r = request();
+  r.motion_active = true;
+  r.nominal[0] = -.3;
+  r.state.dq[0] = -.02;
+  for (int frame = 0; frame < 9; ++frame) {
+    r.state.frame_pose[frame].setIdentity();
+    r.state.frame_pose[frame].translation().z() = .5;
+    r.state.frame_jacobian[frame].setZero();
+    r.state.frame_jacobian[frame](2, 0) = 1;
+  }
+  auto out = f.local.update(r, nullptr, nullptr, r.stamp_ns);
+  EXPECT_GT(out.reply.result.table_constraints, 0);
+  EXPECT_GT(out.reply.result.safe_torque[0], 0);
+  EXPECT_FALSE(out.reply.result.fatal_solver_fault);
+  EXPECT_TRUE(out.degraded);
+  auto ids = identities();
+  ids[0].world_from_base.translation().z() = 1;
+  Fixture high(false);
+  high.safety.table_height = .1;
+  high.configure(0, ids);
+  out = high.local.update(r, nullptr, nullptr, r.stamp_ns);
+  EXPECT_GT(out.reply.result.minimum_table_clearance, 1.0);
+  EXPECT_NEAR(out.reply.result.safe_torque[0], -.3, 1e-9);
+}
+TEST(AsyncSafety, SecondaryInfeasibilityHoldsWithoutTerminatingOwnership) {
+  Fixture f;
+  f.safety.obstacle_collision_enabled = true;
+  f.safety.obstacle_centers = {.4, 0, .4};
+  f.safety.obstacle_radii = {3};
+  f.configure();
+  auto r = request();
+  r.motion_active = true;
+  auto failed = success(r);
+  failed.result.solver_succeeded = false;
+  auto out = f.local.update(r, nullptr, &failed, r.stamp_ns);
+  EXPECT_TRUE(out.degraded);
+  EXPECT_TRUE(out.reply.result.fallback_active);
+  EXPECT_FALSE(out.reply.result.fatal_input_fault);
+  EXPECT_FALSE(out.reply.result.fatal_solver_fault);
+  EXPECT_TRUE(out.reply.result.safe_torque.allFinite());
+  EXPECT_LE(out.reply.result.safe_torque.cwiseAbs().maxCoeff(), .35 + 1e-9);
+}
+TEST(AsyncSafety, MandatoryInfeasibilityIsAnExceptionalFault) {
+  Fixture f(false);
+  f.safety.table_height = 2;
+  f.configure();
+  auto r = request();
+  auto out = f.local.update(r, nullptr, nullptr, r.stamp_ns);
+  EXPECT_TRUE(out.reply.result.fatal_solver_fault);
+}
+TEST(AsyncSafety, IsolatedModelGlitchHasBoundedGraceWithoutRefreshingTimestamp) {
+  Fixture f;
+  f.configure();
+  auto r = request();
+  ASSERT_TRUE(f.local.prepare_model(r.state, r.stamp_ns));
+  const auto good = r.state;
+  r.state.mass(0, 0) = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_TRUE(f.local.prepare_model(r.state, r.stamp_ns + 1000000));
+  EXPECT_TRUE(f.local.model_reused());
+  r.state = good;
+  r.state.mass(0, 0) = -1;
+  EXPECT_FALSE(f.local.prepare_model(r.state, r.stamp_ns + 4000000));
+  r.state = good;
+  r.state.q[0] = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(f.local.prepare_model(r.state, r.stamp_ns + 1000000));
+}
+TEST(AsyncSafety, DualPeerFreshnessDoesNotBlockEitherOwner) {
+  Fixture f(true, true);
+  f.safety.inter_arm_collision_enabled = true;
+  f.configure();
+  auto r = request();
+  r.motion_active = true;
+  auto ok = success(r);
+  auto out = f.local.update(r, nullptr, &ok, r.stamp_ns);
+  EXPECT_FALSE(out.peer_usable);
+  EXPECT_FALSE(out.reply.result.fatal_solver_fault);
+  auto peer = request();
+  out = f.local.update(r, &peer, nullptr, r.stamp_ns);
+  EXPECT_TRUE(out.peer_usable);
+  r = request(60);
+  r.motion_active = true;
+  ok = success(r);
+  out = f.local.update(r, &peer, &ok, r.stamp_ns);
+  EXPECT_FALSE(out.peer_usable);
+  EXPECT_TRUE(out.degraded);
+}
+TEST(AsyncSafety, CallbackProgressDoesNotWaitForWorkerThread) {
+  Fixture f;
+  f.configure();
+  std::promise<void> release, started;
+  auto blocker = release.get_future();
+  auto ready = started.get_future();
+  std::thread worker([&] {
+    started.set_value();
+    blocker.wait();
+  });
+  ready.wait();
+  int progressed = 0;
+  for (int i = 1; i <= 80; ++i) {
+    auto r = request(i);
+    auto out = f.local.update(r, nullptr, nullptr, r.stamp_ns);
+    EXPECT_FALSE(out.reply.result.fatal_solver_fault);
+    ++progressed;
+  }
+  release.set_value();
+  worker.join();
+  EXPECT_EQ(progressed, 80);
+}
+TEST(AsyncCoordinator, SlowAndFailedWorkerNeverLatchDeadlineOrSolverStops) {
+  sf::SafetyCoordinator coordinator;
+  sf::CoordinatorParameters p;
+  p.asynchronous = true;
+  p.filter_deadline_ns = 1;
+  p.result_deadline_ns = 2;
+  p.maximum_failures = 1;
+  sf::cbf::SafetyParameters safety;
+  safety.active_arms = p.active;
+  safety.obstacle_collision_enabled = true;
+  safety.obstacle_centers = {.4, 0, .4};
+  safety.obstacle_radii = {3};
+  std::string error;
+  ASSERT_TRUE(coordinator.configure(p, safety, identities(), &error)) << error;
+  auto r = request();
+  coordinator.submit(0, r);
+  EXPECT_TRUE(coordinator.pump(r.stamp_ns));
+  EXPECT_EQ(coordinator.stopped(), sf::SafetyStop::none);
+  sf::SafetyReply reply;
+  ASSERT_TRUE(coordinator.receive(0, reply));
+  EXPECT_TRUE(reply.result.fallback_active);
+  for (int i = 2; i < 20; ++i) {
+    r = request(i);
+    coordinator.submit(0, r);
+    coordinator.pump(r.stamp_ns);
+    EXPECT_EQ(coordinator.stopped(), sf::SafetyStop::none);
+  }
+}
+TEST(AsyncCoordinator, DualRequestsAreLatestOnlyAndFinishNeedsBothOwners) {
+  sf::SafetyCoordinator c;
+  sf::CoordinatorParameters p;
+  p.asynchronous = true;
+  p.active = {true, true};
+  sf::cbf::SafetyParameters safety;
+  safety.active_arms = p.active;
+  std::string error;
+  ASSERT_TRUE(c.configure(p, safety, identities(), &error)) << error;
+  auto left = request();
+  left.finish_requested = true;
+  c.submit(0, left);
+  EXPECT_FALSE(c.may_finish());
+  EXPECT_FALSE(c.pump(left.stamp_ns));
+  auto right = request(3);
+  right.finish_requested = true;
+  c.submit(1, right);
+  left = request(3);
+  left.finish_requested = true;
+  c.submit(0, left);
+  EXPECT_TRUE(c.may_finish());
+  EXPECT_TRUE(c.pump(left.stamp_ns));
+  sf::SafetyReply reply;
+  ASSERT_TRUE(c.receive(0, reply));
+  EXPECT_EQ(reply.cycles[0], 3u);
+  EXPECT_EQ(reply.cycles[1], 3u);
+  sf::ModelRequest peer;
+  ASSERT_TRUE(c.peer(0, peer));
+  EXPECT_EQ(peer.cycle, 3u);
+}

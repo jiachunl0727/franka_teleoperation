@@ -59,12 +59,16 @@ class RuntimeConfigurationTest(unittest.TestCase):
             )
             if section == "hand":
                 expected -= {
-                    "grasp_force_n",
                     "grasp_width_m",
                     "epsilon_inner_m",
                     "epsilon_outer_m",
                     "grip_click_max_ms",
                     "grip_double_click_ms",
+                    "grip_press",
+                    "grip_release",
+                    "grip_debounce_ms",
+                    "close_retry_interval_ms",
+                    "mock_object_width_m",
                 }
             self.assertEqual(set(data[section]), expected)
         # The template is edited for deployment; schema/selection checks must
@@ -124,12 +128,16 @@ class RuntimeConfigurationTest(unittest.TestCase):
         for section in ALLOWED:
             expected = ALLOWED[section] - (
                 {
-                    "grasp_force_n",
                     "grasp_width_m",
                     "epsilon_inner_m",
                     "epsilon_outer_m",
                     "grip_click_max_ms",
                     "grip_double_click_ms",
+                    "grip_press",
+                    "grip_release",
+                    "grip_debounce_ms",
+                    "close_retry_interval_ms",
+                    "mock_object_width_m",
                 }
                 if section == "hand"
                 else set()
@@ -180,6 +188,18 @@ class RuntimeConfigurationTest(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         load_runtime(self.path, arms)
 
+    def test_joystick_and_cable_settings_support_per_arm_overrides(self):
+        self.data["hand"] = dict(
+            cable_diameter_m=.005, cable_diameter_tolerance_m=.002, grasp_force_n=-1.,
+            joystick_engage=.4, joystick_neutral=.2, mock_object_width_m=.005,
+        )
+        self.data["arm_settings"] = {"arm": {"hand": {"grasp_force_n": 5.0, "cable_diameter_m": .01}}}
+        path = self.write(self.data)
+        arms = load_arms(path)
+        configured = load_runtime(path, arms)
+        self.assertEqual(configured["hand"], self.data["hand"])
+        self.assertEqual(configured["arm_settings"]["arm"]["hand"]["cable_diameter_m"], .01)
+
     def test_invalid_schema_and_config_confirmation_are_rejected(self):
         changes = [
             dict(extra={}),
@@ -208,3 +228,33 @@ class RuntimeConfigurationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_nullspace_home_and_singularity_settings_validate(tmp_path):
+    path = tmp_path / "runtime.yaml"
+    home = [0.0, -.7854, 0.0, -2.3562, 0.0, 1.5708, .7854]
+    data = {
+        "pipeline": {},
+        "arms": {"arm": {"namespace": "/arm", "controller": "right"}},
+        "controller": {"nullspace_enabled": True, "home_joint_position": home},
+        "cbf": {"singularity_enabled": True, "singularity_minimum_manipulability": .05},
+        "arm_settings": {"arm": {"controller": {"home_joint_position": [0.2] + home[1:]}}},
+    }
+    path.write_text(yaml.safe_dump(data))
+    arms = load_arms(path)
+    result = load_runtime(path, arms)
+    assert result["arm_settings"]["arm"]["controller"]["home_joint_position"][0] == .2
+    import pytest
+
+    for section, key, invalid in [
+        ("controller", "nullspace_enabled", "true"),
+        ("controller", "nullspace_stiffness", 0),
+        ("controller", "home_joint_position", [0.0] * 6),
+        ("cbf", "singularity_cbf_frequency", float("nan")),
+        ("cbf", "singularity_enabled", 1),
+    ]:
+        changed = copy.deepcopy(data)
+        changed[section][key] = invalid
+        path.write_text(yaml.safe_dump(changed))
+        with pytest.raises(ValueError):
+            load_runtime(path, arms)

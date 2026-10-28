@@ -17,18 +17,24 @@ class FrankaHand final : public HandDevice {
   explicit FrankaHand(const std::string& ip) : hand_(ip) {}
   bool homing() override { return hand_.homing(); }
   bool move(double width, double speed) override { return hand_.move(width, speed); }
+  bool grasp(double width, double speed, double force, double inner, double outer) override {
+    return hand_.grasp(width, speed, force, inner, outer);
+  }
   bool stop() override { return hand_.stop(); }
   HandFeedback read() override {
     const auto s = hand_.readOnce();
-    return {s.width, s.max_width};
+    return {s.width, s.max_width, s.is_grasped};
   }
 
  private:
   franka::Gripper hand_;
 };
 }  // namespace
-HandWorker::HandWorker(bool hardware, std::string ip, double duration)
-    : hardware_(hardware), ip_(std::move(ip)), mock_duration_ms_(duration) {}
+HandWorker::HandWorker(bool hardware, std::string ip, double duration, double object_width)
+    : hardware_(hardware),
+      ip_(std::move(ip)),
+      mock_duration_ms_(duration),
+      mock_object_width_(object_width) {}
 HandWorker::HandWorker(std::shared_ptr<HandDevice> device)
     : hardware_(true), mock_duration_ms_(0), hand_(std::move(device)) {
   if (!hand_)
@@ -52,6 +58,7 @@ void HandWorker::stop() {
     StopResult result;
     if (!hardware_) {
       result.success = true;
+      result.interrupted = !command_done_.load();
       return result;
     }
     const auto completed = [&] {
@@ -64,6 +71,20 @@ void HandWorker::stop() {
     do {
       if (command_done_.load())
         return completed();  // Already idle; no firmware stop needed.
+      if (!command_submitted_.load()) {
+        // Input cancellation during live readback or release of an existing
+        // grasp prevents the next motion from being submitted. There is no
+        // unfinished motion to stop yet, and another stop could release force
+        // redundantly or race the release already in progress.
+        std::unique_lock<std::mutex> lock(completion_mutex_);
+        command_finished_.wait_for(lock, std::chrono::milliseconds(20), [this] {
+          return command_done_.load() || command_submitted_.load();
+        });
+        if (command_done_.load())
+          return completed();
+        if (!command_submitted_.load())
+          continue;
+      }
       std::shared_ptr<HandDevice> hand;
       {
         std::lock_guard<std::mutex> lock(connection_mutex_);
@@ -74,8 +95,14 @@ void HandWorker::stop() {
         return result;
       }
       {
+        // Serialize cancellation with command completion. Once a grasp command
+        // has completed, neutral/input loss must not send stop() and release it.
+        std::unique_lock<std::mutex> completion_lock(completion_mutex_);
+        if (command_done_.load())
+          return completed();
         const auto begin = Clock::now();
         ++stop_calls_;
+        stop_called_.store(true);
         try {
           if (hand->stop())
             result.acknowledged = true;
@@ -126,6 +153,8 @@ void HandWorker::issue(const HandRequest& request, double initial_width) {
   if (motion_.valid() || stop_.valid())
     throw std::logic_error("overlapping Hand motions");
   cancel_.store(false);
+  stop_called_.store(false);
+  command_submitted_.store(false);
   command_done_.store(false);
   motion_ = std::async(std::launch::async, [this, request, initial_width, begin = Clock::now()] {
     HandResult result;
@@ -157,20 +186,26 @@ void HandWorker::issue(const HandRequest& request, double initial_width) {
         const auto begin = Clock::now();
         double elapsed = 0;
         const bool calibration = request.operation == HandOperation::calibrate;
-        const double duration = calibration
-                                    ? mock_duration_ms_ / 1000.
-                                    : std::abs(request.width - initial_width) / request.speed;
+        const double target = request.operation == HandOperation::close
+                                  ? std::max(request.width, mock_object_width_)
+                                  : request.width;
+        const double duration = calibration ? mock_duration_ms_ / 1000.
+                                            : std::abs(target - initial_width) / request.speed;
         while (!cancel_.load() && elapsed < duration) {
           std::this_thread::sleep_for(std::chrono::milliseconds(1));
           elapsed = std::chrono::duration<double>(Clock::now() - begin).count();
         }
-        const double distance =
-            std::min(std::abs(request.width - initial_width), request.speed * elapsed);
+        const double distance = std::min(std::abs(target - initial_width), request.speed * elapsed);
         result.width =
-            calibration ? .08
-                        : initial_width + (request.width >= initial_width ? distance : -distance);
+            calibration ? .08 : initial_width + (target >= initial_width ? distance : -distance);
         result.maximum_width = .08;
         result.success = !cancel_.load();
+        result.grasp_confirmed = result.success && request.operation == HandOperation::close &&
+                                 mock_object_width_ > 0 && request.force > 0 &&
+                                 result.width >= request.minimum_grasp_width &&
+                                 result.width <= request.maximum_grasp_width;
+        if (request.operation == HandOperation::close && !result.grasp_confirmed && !cancel_.load())
+          result.success = false;
         result.communication_ok = true;
         command_finished();
       } else {
@@ -187,8 +222,23 @@ void HandWorker::issue(const HandRequest& request, double initial_width) {
             hand_ = hand;
           }
         }
+        const auto release_force = [&](const char* context) {
+          try {
+            if (!hand->stop())
+              throw std::runtime_error("stop returned unsuccessful");
+          } catch (const std::exception& e) {
+            // A failed force-release stop is a device fault, even if the SDK
+            // classifies its rejection as a command exception.
+            throw std::runtime_error(std::string(context) + ": " + e.what());
+          }
+        };
+        if (holding_ && request.operation != HandOperation::close) {
+          release_force("Hand failed to release grasp before opening/calibration");
+          holding_ = false;
+        }
         double target = request.width;
         bool move_needed = true;
+        bool grasp_issued = false;
         if (request.operation == HandOperation::close) {
           const auto current = read();
           if (!valid_hand_feedback(current.width, current.maximum_width))
@@ -196,13 +246,28 @@ void HandWorker::issue(const HandRequest& request, double initial_width) {
           target = std::min(target, std::clamp(current.width, 0., current.maximum_width));
           move_needed = current.width > target + 1e-6;
         }
-        if (!cancel_.load()) {
+        bool execute = false;
+        {
+          std::lock_guard<std::mutex> lock(completion_mutex_);
+          execute = !cancel_.load() && (request.operation != HandOperation::close || move_needed);
+          if (execute)
+            command_submitted_.store(true);
+        }
+        command_finished_.notify_all();
+        if (execute) {
           const auto begin = Clock::now();
           try {
-            result.success = request.operation == HandOperation::calibrate
-                                 ? hand->homing()
-                                 : (!move_needed || hand->move(target, request.speed));
-            result.retryable = request.operation == HandOperation::close && !result.success;
+            if (request.operation == HandOperation::calibrate) {
+              result.success = hand->homing();
+            } else if (request.operation == HandOperation::close) {
+              if (move_needed) {
+                grasp_issued = true;
+                result.success = hand->grasp(target, request.speed, request.force,
+                                             request.epsilon_inner, request.epsilon_outer);
+              }
+            } else {
+              result.success = hand->move(target, request.speed);
+            }
           } catch (...) {
             result.command_ms =
                 std::chrono::duration<double, std::milli>(Clock::now() - begin).count();
@@ -215,19 +280,26 @@ void HandWorker::issue(const HandRequest& request, double initial_width) {
         const auto state = read();
         result.width = state.width;
         result.maximum_width = state.maximum_width;
+        result.grasp_confirmed = request.operation == HandOperation::close && result.success &&
+                                 state.is_grasped && state.width >= request.minimum_grasp_width &&
+                                 state.width <= request.maximum_grasp_width;
+        if (request.operation == HandOperation::close && !result.grasp_confirmed) {
+          // A wide SDK success window must not accept empty closure or a cable
+          // outside the configured band. Do not leave an unconfirmed force on.
+          if (grasp_issued && !stop_called_.load())
+            release_force("Hand failed to stop an unconfirmed grasp");
+          result.success = false;
+        }
         result.communication_ok = true;
       }
     } catch (const franka::CommandException& e) {
       command_finished();
-      // Firmware rejected/ended the move; contact cannot be identified from
-      // this API. A fresh held grip may retry closing after valid readback.
+      // Command failures do not authorize automatic closing retries.
       result.error = e.what();
       command_error = true;
-      result.retryable = request.operation == HandOperation::close;
     } catch (const std::exception& e) {
       command_finished();
       result.error = e.what();
-      result.retryable = false;  // Never retry transport/protocol/unknown errors.
     }
     if (!result.error.empty()) {
       // A stop commonly aborts the blocking move. Keep a valid readback even
@@ -253,13 +325,14 @@ std::optional<HandResult> HandWorker::collect() {
     return {};
   auto result = motion_.get();
   if (stop_.valid()) {
-    result.retryable = false;
     result.stop_duration_ms =
         std::chrono::duration<double, std::milli>(Clock::now() - stop_started_).count();
     result.stopped = true;
     const auto stop = stop_.get();
     result.stop_call_ms = stop_call_ms_;
     result.stop_calls = stop_calls_;
+    if (stop_calls_ > 0 || stop.interrupted)
+      result.grasp_confirmed = false;
     result.stop_acknowledged = stop.acknowledged;
     result.stop_retry_exhausted = stop.retry_exhausted;
     result.success = stop.success && result.communication_ok;
@@ -270,6 +343,7 @@ std::optional<HandResult> HandWorker::collect() {
       result.error += stop.error + "; explicit calibration required";
     }
   }
+  holding_ = result.communication_ok && result.grasp_confirmed;
   if (!result.communication_ok) {
     std::lock_guard<std::mutex> lock(connection_mutex_);
     hand_.reset();

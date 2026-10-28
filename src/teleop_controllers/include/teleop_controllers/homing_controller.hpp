@@ -9,6 +9,7 @@ namespace teleop_controllers {
 enum class HomePhase { idle, homing, stopping, succeeded, cancelled, failed };
 const char* home_phase_name(HomePhase phase) noexcept;
 struct HomingParameters {
+  Vector7 home_joint_position{Eigen::Map<const Vector7>(safety_filter::kHome.data())};
   double speed_factor{.15}, velocity_filter_tau{.01};
   double position_tolerance{.01}, velocity_tolerance{.02}, settle_duration{.25};
   double completion_timeout{30}, stop_duration{.5}, stop_acceleration{.75}, stop_timeout{5};

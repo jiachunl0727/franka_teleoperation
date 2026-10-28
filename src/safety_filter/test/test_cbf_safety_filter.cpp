@@ -4,10 +4,12 @@
 #include <limits>
 #include <new>
 
+#include "safety_filter/async_safety.hpp"
 #include "safety_filter/cbf_safety_filter.hpp"
 #include "safety_filter/legacy_pose.hpp"
 #include "safety_filter/panda_limits.hpp"
 #include "safety_filter/panda_model_fixture.hpp"
+#include "safety_filter/singularity.hpp"
 namespace cbf = safety_filter::cbf;
 namespace {
 thread_local bool track_allocations = false;
@@ -458,4 +460,285 @@ TEST(CBF, FeasibleNominalIsExactOptimumAndViolatingNominalStillUsesSolver) {
   track_allocations = false;
   EXPECT_EQ(allocations, size_t{0});
   EXPECT_STREQ(out.solver_status, "feasible_nominal");
+}
+
+TEST(Singularity, LocalModelDerivativesMatchIndependentForwardKinematics) {
+  auto q = Eigen::Map<const cbf::Vector7d>(safety_filter::kHome.data()).eval();
+  q[2] = .3;
+  q[4] = -.2;
+  auto s = safety_filter::panda_model_fixture(q);
+  s.dq << .1, -.2, .15, .05, -.1, .08, .03;
+  const auto measure = cbf::singularity_measure(s, .3);
+  ASSERT_TRUE(measure.valid);
+  constexpr double step = 3e-4;
+  for (int j = 0; j < 7; ++j) {
+    auto plus = q, minus = q;
+    plus[j] += step;
+    minus[j] -= step;
+    const double numerical =
+        (cbf::singularity_measure(safety_filter::panda_model_fixture(plus), .3, false).value -
+         cbf::singularity_measure(safety_filter::panda_model_fixture(minus), .3, false).value) /
+        (2 * step);
+    EXPECT_NEAR(measure.gradient[j], numerical, 2e-6);
+  }
+  const double curvature =
+      (cbf::singularity_measure(safety_filter::panda_model_fixture(q + step * s.dq), .3, false)
+           .value -
+       2 * measure.value +
+       cbf::singularity_measure(safety_filter::panda_model_fixture(q - step * s.dq), .3, false)
+           .value) /
+      (step * step);
+  EXPECT_NEAR(measure.velocity_curvature, curvature, 3e-6);
+  s.frame_jacobian[8](0, 0) += .01;
+  EXPECT_FALSE(cbf::singularity_measure(s, .3).valid);
+}
+TEST(Singularity, BarrierIntervenesAtBoundaryAndRespectsInactiveArm) {
+  auto p = parameters();
+  p.active_arms = {true, false};
+  p.singularity_enabled = true;
+  p.joint_position_enabled = p.joint_velocity_enabled = p.joint_acceleration_enabled = false;
+  p.solver_max_iterations = 2000;
+  auto s = state();
+  s.arm[0] = safety_filter::panda_model_fixture(s.arm[0].q);
+  const auto measure = cbf::singularity_measure(s.arm[0], .3);
+  ASSERT_TRUE(measure.valid);
+  p.singularity_minimum_manipulability = std::sqrt(measure.value);
+  cbf::CbfSafetyFilter filter;
+  configure(filter, p);
+  cbf::Vector14d nominal = cbf::Vector14d::Zero();
+  nominal.head<7>() = -.2 * measure.gradient.normalized();
+  const auto result = filter.filter(nominal, s, .001, {true, false});
+  ASSERT_TRUE(result.solver_succeeded) << result.solver_status;
+  EXPECT_EQ(result.singularity_constraints, 1);
+  EXPECT_GT(result.intervention_norm, .05);
+  EXPECT_GE(measure.gradient.dot(result.safe_torque.head<7>()), -1e-5);
+  EXPECT_TRUE(result.safe_torque.tail<7>().isZero());
+  filter.reset();
+  track_allocations = true;
+  allocations = 0;
+  const auto zero = filter.filter(cbf::Vector14d::Zero(), s, .001, {false, false});
+  track_allocations = false;
+  EXPECT_EQ(allocations, 0u);
+  EXPECT_TRUE(zero.solver_succeeded) << zero.solver_status;
+}
+TEST(Singularity, InvalidDomainAndInfeasibleActuationStopWithoutCertifiedFallback) {
+  auto p = parameters();
+  p.active_arms = {true, false};
+  p.singularity_enabled = true;
+  p.joint_position_enabled = p.joint_velocity_enabled = p.joint_acceleration_enabled = false;
+  auto s = state();
+  s.arm[0] = safety_filter::panda_model_fixture(s.arm[0].q);
+  const auto measure = cbf::singularity_measure(s.arm[0], .3);
+  p.singularity_minimum_manipulability = 2 * std::sqrt(measure.value);
+  cbf::CbfSafetyFilter filter;
+  configure(filter, p);
+  auto result = filter.filter(cbf::Vector14d::Zero(), s, .001, {false, false});
+  EXPECT_TRUE(result.fatal_input_fault);
+  EXPECT_TRUE(result.singularity_state_invalid);
+  // At h=0, negative hdot is outside the higher-order barrier domain.
+  p.singularity_minimum_manipulability = std::sqrt(measure.value);
+  s.arm[0].dq = -.01 * measure.gradient;
+  configure(filter, p);
+  result = filter.filter(cbf::Vector14d::Zero(), s, .001, {false, false});
+  EXPECT_TRUE(result.fatal_input_fault);
+  EXPECT_TRUE(result.singularity_state_invalid);
+  // A previous torque pointing through the boundary cannot be corrected within
+  // a zero-duration slew interval. Do not issue a damping fallback for 20 cycles.
+  s.arm[0].dq.setZero();
+  s.arm[0].previous_torque = -measure.gradient.normalized();
+  configure(filter, p);
+  result = filter.filter(cbf::Vector14d::Zero(), s, 0, {false, false});
+  EXPECT_FALSE(result.solver_succeeded);
+  EXPECT_TRUE(result.fatal_solver_fault);
+  // Explicit overall bypass retains actuator-only behavior, even with bad geometry.
+  p.enabled = false;
+  configure(filter, p);
+  s.arm[0].frame_jacobian[8].setZero();
+  result = filter.filter(cbf::Vector14d::Zero(), s, .001, {false, false});
+  EXPECT_TRUE(result.solver_succeeded);
+  EXPECT_EQ(result.singularity_constraints, 0);
+}
+
+TEST(Singularity, TorqueBarrierIncludesMassCoriolisAndVelocityCurvature) {
+  auto p = parameters();
+  p.active_arms = {true, false};
+  p.singularity_enabled = true;
+  p.joint_position_enabled = p.joint_velocity_enabled = p.joint_acceleration_enabled = false;
+  p.solver_max_iterations = 2000;
+  auto s = state();
+  auto& arm = s.arm[0];
+  arm = safety_filter::panda_model_fixture(arm.q);
+  const auto stationary = cbf::singularity_measure(arm, .3);
+  arm.mass.diagonal() << 2, 1.8, 1.6, 1.4, 1.2, 1, .8;
+  arm.coriolis.setConstant(.1);
+  arm.previous_torque = arm.coriolis;
+  const auto direction = stationary.gradient.normalized().eval();
+  arm.dq << .05, -.04, .03, -.02, .01, -.03, .02;
+  arm.dq -= direction * direction.dot(arm.dq);
+  const auto measure = cbf::singularity_measure(arm, .3);
+  p.singularity_minimum_manipulability = std::sqrt(measure.value);
+  cbf::Vector14d nominal = cbf::Vector14d::Zero();
+  nominal.head<7>() = arm.coriolis - .2 * arm.mass * direction;
+  cbf::CbfSafetyFilter filter;
+  configure(filter, p);
+  const auto result = filter.filter(nominal, s, .001, {true, false});
+  ASSERT_TRUE(result.solver_succeeded) << result.solver_status;
+  const double residual =
+      (measure.gradient.dot(arm.mass.ldlt().solve(result.safe_torque.head<7>() - arm.coriolis)) +
+       measure.velocity_curvature +
+       2 * p.singularity_cbf_frequency * measure.gradient.dot(arm.dq)) /
+      measure.value;
+  EXPECT_GE(residual, -p.solver_feasibility_tolerance);
+  EXPECT_GT(result.intervention_norm, .01);
+}
+
+TEST(AsyncSafety, CurrentStateGuardDoesNotAllocateOrRunOsqp) {
+  safety_filter::AsyncSafetyController local;
+  safety_filter::CoordinatorParameters limits;
+  cbf::SafetyParameters p;
+  p.active_arms = limits.active;
+  p.enabled = false;
+  std::string error;
+  ASSERT_TRUE(local.configure(0, limits, p, identities(), &error)) << error;
+  safety_filter::ModelRequest request;
+  request.state = safety_filter::panda_model_fixture(
+      Eigen::Map<const cbf::Vector7d>(safety_filter::kHome.data()));
+  request.cycle = 1;
+  request.epoch = 1;
+  request.stamp_ns = 1000000000;
+  track_allocations = true;
+  allocations = 0;
+  const bool valid = local.prepare_model(request.state, request.stamp_ns);
+  const auto output = local.update(request, nullptr, nullptr, request.stamp_ns);
+  track_allocations = false;
+  EXPECT_TRUE(valid);
+  EXPECT_EQ(allocations, 0u);
+  EXPECT_FALSE(output.reply.result.fatal_input_fault);
+  EXPECT_EQ(output.reply.result.solver_iterations, 0);
+}
+
+TEST(CollisionGeometry, DisabledFamiliesSkipTransformsAndDistancesButKeepTableGuard) {
+  for (int active_count : {1, 2}) {
+    auto p = parameters();
+    p.active_arms = {true, active_count == 2};
+    p.obstacle_centers = {.4, 0., .4};
+    p.obstacle_radii = {.1};  // Configured but disabled: no diagnostic-only work.
+    cbf::CbfSafetyFilter filter;
+    configure(filter, p);
+    auto s = state();
+    for (auto& arm : s.arm)
+      arm = safety_filter::panda_model_fixture(arm.q);
+    auto out = filter.guard(cbf::Vector14d::Zero(), cbf::Vector14d::Zero(), s, .001, 0, 0, .005);
+    EXPECT_EQ(out.geometry_work.capsule_transforms, 0);
+    EXPECT_EQ(out.geometry_work.self_pair_distances, 0);
+    EXPECT_EQ(out.geometry_work.inter_arm_pair_distances, 0);
+    EXPECT_EQ(out.geometry_work.obstacle_distances, 0);
+    EXPECT_EQ(out.geometry_work.broadphase_rejections, 0);
+    EXPECT_DOUBLE_EQ(out.minimum_self_clearance, 1e9);
+    EXPECT_DOUBLE_EQ(out.minimum_inter_arm_clearance, 1e9);
+    EXPECT_DOUBLE_EQ(out.minimum_obstacle_clearance, 1e9);
+    EXPECT_TRUE(out.solver_succeeded);
+
+    p.table_enabled = true;
+    configure(filter, p);
+    allocations = 0;
+    track_allocations = true;
+    out = filter.guard(cbf::Vector14d::Zero(), cbf::Vector14d::Zero(), s, .001, 0, 0, .005);
+    track_allocations = false;
+    EXPECT_EQ(allocations, 0u);
+    EXPECT_EQ(out.geometry_work.capsule_transforms, 12 * active_count);
+    EXPECT_EQ(out.table_constraints, 12 * active_count);
+    EXPECT_EQ(out.geometry_work.self_pair_distances, 0);
+    EXPECT_EQ(out.geometry_work.inter_arm_pair_distances, 0);
+    EXPECT_EQ(out.geometry_work.obstacle_distances, 0);
+    EXPECT_LT(out.minimum_table_clearance, 1e9);
+    EXPECT_FALSE(out.fatal_solver_fault);
+  }
+}
+
+TEST(CollisionGeometry, EitherSingleArmSkipsInterArmGeometryWithoutAPeer) {
+  for (int own : {0, 1}) {
+    auto p = parameters();
+    p.active_arms = {own == 0, own == 1};
+    p.inter_arm_collision_enabled = true;
+    cbf::CbfSafetyFilter filter;
+    configure(filter, p);
+    const auto out =
+        filter.guard(cbf::Vector14d::Zero(), cbf::Vector14d::Zero(), state(), .001, own, 0, .005);
+    EXPECT_TRUE(out.solver_succeeded);
+    EXPECT_EQ(out.geometry_work.capsule_transforms, 0);
+    EXPECT_EQ(out.geometry_work.inter_arm_pair_distances, 0);
+    EXPECT_EQ(out.inter_arm_constraints, 0);
+    EXPECT_DOUBLE_EQ(out.minimum_inter_arm_clearance, 1e9);
+  }
+}
+
+TEST(CollisionGeometry, FarInterArmPairsArePrunedAndRecheckedOnApproach) {
+  auto p = parameters();
+  p.inter_arm_collision_enabled = true;
+  cbf::CbfSafetyFilter filter;
+  configure(filter, p);
+  auto s = state();
+  for (auto& arm : s.arm)
+    arm = safety_filter::panda_model_fixture(arm.q);
+  const auto far =
+      filter.guard(cbf::Vector14d::Zero(), cbf::Vector14d::Zero(), s, .001, 0, .001, .005, .01);
+  EXPECT_TRUE(far.solver_succeeded);
+  EXPECT_EQ(far.inter_arm_constraints, 0);
+  EXPECT_GT(far.minimum_inter_arm_clearance, p.collision_activation_distance);
+  EXPECT_GT(far.geometry_work.broadphase_rejections, 0);
+  EXPECT_LT(far.geometry_work.inter_arm_pair_distances, 195);
+  // Base/base is permanently excluded; every other pair is either checked or
+  // conservatively rejected during this evaluation.
+  EXPECT_EQ(far.geometry_work.inter_arm_pair_distances + far.geometry_work.broadphase_rejections,
+            195);
+
+  auto near = s;
+  for (auto& pose : near.arm[1].frame_pose)
+    pose.translation().x() -= 2.;
+  const auto approaching =
+      filter.guard(cbf::Vector14d::Zero(), cbf::Vector14d::Zero(), near, .001, 0, .001, .005, .01);
+  EXPECT_GT(approaching.inter_arm_constraints, 0);
+  EXPECT_LT(approaching.minimum_inter_arm_clearance, 0.);
+  EXPECT_FALSE(approaching.fatal_input_fault);
+
+  // Leaving and re-entering the active set must not retain an old Jdot sample.
+  filter.guard(cbf::Vector14d::Zero(), cbf::Vector14d::Zero(), s, .001, 0, .001, .005, .01);
+  const auto reentry =
+      filter.guard(cbf::Vector14d::Zero(), cbf::Vector14d::Zero(), near, .001, 0, .001, .005, .01);
+  cbf::CbfSafetyFilter fresh;
+  configure(fresh, p);
+  const auto reference =
+      fresh.guard(cbf::Vector14d::Zero(), cbf::Vector14d::Zero(), near, .001, 0, .001, .005, .01);
+  EXPECT_EQ(reentry.inter_arm_constraints, reference.inter_arm_constraints);
+  EXPECT_DOUBLE_EQ(reentry.minimum_inter_arm_clearance, reference.minimum_inter_arm_clearance);
+  EXPECT_TRUE(reentry.safe_torque.isApprox(reference.safe_torque, 1e-12));
+  EXPECT_DOUBLE_EQ(reentry.maximum_constraint_violation, reference.maximum_constraint_violation);
+}
+
+TEST(CollisionGeometry, SelfAndObstaclePruningRetainNearPairsWithoutAllocating) {
+  auto p = parameters();
+  p.active_arms = {true, false};
+  p.self_collision_enabled = p.obstacle_collision_enabled = true;
+  p.obstacle_centers = {.4, 0., .4, 100., 100., 100.};
+  p.obstacle_radii = {.2, .1};
+  cbf::CbfSafetyFilter filter;
+  configure(filter, p);
+  auto s = state();
+  s.arm[0] = safety_filter::panda_model_fixture(s.arm[0].q);
+  allocations = 0;
+  track_allocations = true;
+  const auto out =
+      filter.guard(cbf::Vector14d::Zero(), cbf::Vector14d::Zero(), s, .001, 0, 0, .005);
+  track_allocations = false;
+  EXPECT_EQ(allocations, 0u);
+  EXPECT_EQ(out.geometry_work.capsule_transforms, 14);
+  EXPECT_GT(out.geometry_work.self_pair_distances, 0);
+  EXPECT_GT(out.geometry_work.obstacle_distances, 0);
+  EXPECT_LT(out.geometry_work.obstacle_distances, 28);
+  EXPECT_GT(out.geometry_work.broadphase_rejections, 0);
+  EXPECT_LT(out.minimum_self_clearance, 1e9);
+  EXPECT_LT(out.minimum_obstacle_clearance, p.collision_activation_distance);
+  EXPECT_GT(out.obstacle_constraints, 0);
+  EXPECT_FALSE(out.fatal_input_fault);
 }

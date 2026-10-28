@@ -162,6 +162,7 @@ class TeleoperationLaunchTest(unittest.TestCase):
                 torque_limits=[87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0],
                 maximum_torque_rate=1000.0,
             )
+            combined["hand"]["grasp_force_n"] = 5.0
             combined["recording"].update(
                 left_controller_state_topic=prefix + "/left/raw", namespace=prefix
             )
@@ -186,7 +187,7 @@ class TeleoperationLaunchTest(unittest.TestCase):
                     trigger=0.0,
                     home=False,
                     tracked=True,
-                    grip=0.0,
+                    inward=0.0,
                     joystick=None,
                 ):
                     nonlocal sequence
@@ -214,7 +215,11 @@ class TeleoperationLaunchTest(unittest.TestCase):
                             m.trigger_active = True
                             m.trigger_value = trigger
                             m.grip_active = True
-                            m.grip_value = grip
+                            m.grip_value = 0.0
+                            m.thumbstick_active = True
+                            m.thumbstick_x = -inward if s == "right" else inward
+                            if joystick == s:
+                                m.thumbstick_x = .8 if s == "right" else -.8
                             m.grip_pose.orientation.w = 1.0
                             b = QuestButtonState()
                             b.name = "x" if s == "left" else "a"
@@ -345,7 +350,7 @@ class TeleoperationLaunchTest(unittest.TestCase):
                         wait(lambda: bool(cbf_statuses), send=True, trigger=0.8)
                         self.assertTrue(
                             all(
-                                s.solver_status == "disabled_actuator_bounds_only"
+                                s.mandatory_table_guard_enabled and s.execution == "asynchronous"
                                 and s.solver_succeeded
                                 and not s.fallback_active
                                 for s in cbf_statuses
@@ -378,7 +383,7 @@ class TeleoperationLaunchTest(unittest.TestCase):
                             ),
                             send=True,
                         )
-                        drive(0.08, grip=1.0)
+                        drive(0.08, inward=1.0)
                         drive(0.05)
                         wait(
                             lambda: all(
@@ -399,7 +404,9 @@ class TeleoperationLaunchTest(unittest.TestCase):
                                 lambda: hand_states[chosen][-1].state == "open"
                                 and not hand_states[chosen][-1].busy,
                                 send=True,
+                                joystick=chosen,
                             )
+                            drive(0.03)
                             for s, count in others.items():
                                 self.assertEqual(
                                     hand_states[s][-1].operations_started, count

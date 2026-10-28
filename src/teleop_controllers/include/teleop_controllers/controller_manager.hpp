@@ -42,6 +42,7 @@ class ControllerManager {
                           position_hold, damping) {}
   void accept(const Command& command, uint64_t now_ns) noexcept;
   const Command& requested_command() const noexcept { return last_; }
+  uint64_t release_source_ns() const noexcept { return last_release_source_ns_; }
   void homing_input(const HomingInput& input, uint64_t now_ns) noexcept {
     if (!shutdown_)
       homing_.input(input, now_ns);
@@ -68,6 +69,7 @@ class ControllerManager {
   Command last_{};
   std::array<char, 65> session_{};
   uint64_t generation_{0}, sequence_{0}, source_ns_{0};
+  uint64_t last_release_source_ns_{0};
   bool identity_{false}, ordered_{false}, release_seen_{false}, enabled_{false};
   bool shutdown_{false}, teleoperation_reset_pending_{true};
   bool hold_reset_pending_{true};

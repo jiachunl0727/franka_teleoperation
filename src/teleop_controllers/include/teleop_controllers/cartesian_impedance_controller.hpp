@@ -1,11 +1,17 @@
 #pragma once
 
+#include "safety_filter/panda_limits.hpp"
 #include "teleop_controllers/torque_controller.hpp"
 
 namespace teleop_controllers {
 struct CartesianImpedanceParameters {
   double lambda_translation{50}, lambda_rotation{40};
   double gain_translation{20}, gain_rotation{2.5};
+  bool nullspace_enabled{false};
+  Vector7 home_joint_position{Eigen::Map<const Vector7>(safety_filter::kHome.data())};
+  double nullspace_stiffness{10.0}, nullspace_damping{6.324555320336759};
+  double nullspace_joint_limit_gain{2.0}, nullspace_joint_limit_margin{0.35};
+  double nullspace_max_torque{5.0}, nullspace_ramp_seconds{0.25};
   bool valid() const noexcept;
 };
 
@@ -20,9 +26,11 @@ class CartesianImpedanceController final : public TorqueController {
   }
   NominalTorque compute(const ArmState& state, const ControlReference& reference,
                         double period) noexcept override;
+  void reset(const ArmState&) noexcept override { elapsed_ = 0; }
 
  private:
   CartesianImpedanceParameters p_;
   Vector6 lambda_, gain_;
+  double elapsed_{0};
 };
 }  // namespace teleop_controllers

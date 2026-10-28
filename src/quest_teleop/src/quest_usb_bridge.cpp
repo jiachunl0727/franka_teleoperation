@@ -441,8 +441,18 @@ class QuestUsbBridge final : public rclcpp::Node {
                                                       ? std::vector<std::string>{"a", "b"}
                                                       : std::vector<std::string>{"x", "y", "menu"};
     std::vector<std::string> input_fields{"trigger", "trigger_active", "grip", "grip_active"};
-    // Optional paired fields keep older APK packets usable for arm/close input.
-    // Missing joystick input never synthesizes an opening button or an edge.
+    // Optional paired fields preserve older APKs for arm control. The Hand
+    // requires actual axis availability; missing axes never imply neutral.
+    if (inputs.contains("thumbstick_xy") || inputs.contains("thumbstick_active")) {
+      const auto axes = finite_array<2>(inputs.at("thumbstick_xy"), "thumbstick_xy");
+      if (std::abs(axes[0]) > 1 || std::abs(axes[1]) > 1)
+        throw std::runtime_error("thumbstick axes must be in [-1, 1]");
+      out.thumbstick_x = axes[0];
+      out.thumbstick_y = axes[1];
+      out.thumbstick_active = boolean(inputs.at("thumbstick_active"), "thumbstick_active");
+      input_fields.push_back("thumbstick_xy");
+      input_fields.push_back("thumbstick_active");
+    }
     if (inputs.contains("thumbstick_click") || inputs.contains("thumbstick_click_active")) {
       quest_teleop_interfaces::msg::QuestButtonState button;
       button.name = "thumbstick";

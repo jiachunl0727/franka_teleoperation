@@ -29,6 +29,11 @@ float32 trigger_value
 bool trigger_active
 float32 grip_value
 bool grip_active
+# Horizontal/vertical thumbstick axes in controller-local coordinates, [-1, 1].
+# Missing axes from older APKs remain inactive and cannot drive the Hand.
+float32 thumbstick_x
+float32 thumbstick_y
+bool thumbstick_active
 # Only this controller's physical buttons: right thumbstick/a/b; left thumbstick/x/y/menu.
 # Disconnect notifications carry an empty array with connection_valid=false.
 QuestButtonState[<=4] buttons

@@ -27,6 +27,7 @@ struct ArmState {
   Eigen::Vector3d position{Eigen::Vector3d::Zero()};
   Eigen::Quaterniond orientation{1, 0, 0, 0};
   Jacobian jacobian{Jacobian::Zero()};
+  Eigen::Matrix<double, 7, 7> mass{Eigen::Matrix<double, 7, 7>::Identity()};
 };
 
 enum class Reason : uint8_t {

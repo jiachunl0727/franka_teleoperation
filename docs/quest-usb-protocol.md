@@ -63,13 +63,18 @@ buttons:
   active: true
 ```
 
-This is a ROS message-schema change. Rebuild `quest_teleop_interfaces` and
-`quest_teleop`, and restart the bridge and subscribers against the updated
-workspace. Updated APKs send the joystick click/value availability pair as well. Older
-packets without both fields remain accepted, but have no joystick button and
-cannot request gripper opening. A partial pair is malformed and invalidates input.
-Install the newly built APK for joystick opening; stop/restart all affected ROS
-nodes after rebuilding the message and bridge.
+Joystick axes are separate ROS fields: `thumbstick_x`, `thumbstick_y` and
+`thumbstick_active`. Updated APK packets carry the pair `thumbstick_xy: [x,y]`
+and `thumbstick_active`; both axes must be finite and inside `[-1,1]`.
+Availability is preserved independently of a centered value. A missing pair
+from an older APK remains inactive, so it cannot authorize Hand motion or
+neutral recovery. Partial pairs and invalid axes are malformed and invalidate
+input. Side-grip values and click buttons remain available for recording;
+they no longer actuate the Hand.
+
+This changes the ROS schema. Rebuild `quest_teleop_interfaces`, the bridge,
+Hand worker and all other active consumers, install the updated APK, and
+restart the pipeline. Older packets remain usable for arm control only.
 
 Request:
 
@@ -124,6 +129,8 @@ Controller input JSON schema (all arrays use metres, radians, m/s, rad/s; quater
     "grip_active": true,
     "thumbstick_click": false,
     "thumbstick_click_active": true,
+    "thumbstick_xy": [-0.8, 0.0],
+    "thumbstick_active": true,
     "button_a": false,
     "button_a_active": true,
     "button_b": false,

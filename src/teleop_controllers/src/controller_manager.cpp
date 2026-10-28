@@ -142,6 +142,7 @@ void ControllerManager::accept(const Command& c, uint64_t now) noexcept {
     }
     enabled_ = false;
     if (c.released) {
+      last_release_source_ns_ = c.source_ns;
       release_seen_ = true;
       if (!local_hold_)
         hold_reset_pending_ = true;
@@ -191,7 +192,7 @@ ManagerOutput ControllerManager::update(const ArmState& s, uint64_t now, double 
     fault(Reason::stale);
   if (!s.position.allFinite() || !s.orientation.coeffs().allFinite() || !s.q.allFinite() ||
       !s.dq.allFinite() || !s.coriolis.allFinite() || !s.jacobian.allFinite() ||
-      !s.previous_torque.allFinite())
+      !s.previous_torque.allFinite() || !s.mass.allFinite())
     out.state_fault = StateFault::nonfinite_state;
   else if (std::abs(s.orientation.norm() - 1) > 0.01)
     out.state_fault = StateFault::orientation;

@@ -495,6 +495,41 @@ class BridgeMapperIntegrationTest(unittest.TestCase):
         )
         self.assertFalse(self.mapper.enabled)
 
+    def test_thumbstick_axes_are_available_per_hand_and_missing_axes_stay_inactive(self):
+        self.connect()
+        for controller, horizontal in (("right", -.8), ("left", .8)):
+            packet = self.packet(0., controller=controller)
+            packet["inputs"].update(thumbstick_xy=[horizontal, .25], thumbstick_active=True)
+            sequence = int(packet["sequence"])
+            self.send(packet)
+            states = self.right_states if controller == "right" else self.left_states
+            self.wait_for(lambda: any(state.sequence == sequence for state in states))
+            state = next(state for state in states if state.sequence == sequence)
+            self.assertTrue(state.thumbstick_active)
+            self.assertAlmostEqual(state.thumbstick_x, horizontal, places=6)
+            self.assertAlmostEqual(state.thumbstick_y, .25, places=6)
+        packet = self.packet(0.)
+        sequence = int(packet["sequence"])
+        self.send(packet)
+        self.wait_for(lambda: any(state.sequence == sequence for state in self.right_states))
+        state = next(state for state in self.right_states if state.sequence == sequence)
+        self.assertFalse(state.thumbstick_active)
+
+    def test_invalid_or_incomplete_thumbstick_axes_disconnect(self):
+        for index, fields in enumerate((
+            dict(thumbstick_xy=[1.1, 0.], thumbstick_active=True),
+            dict(thumbstick_xy=[0., 0.]),
+            dict(thumbstick_active=True),
+        )):
+            self.session = "invalid-stick-" + str(index)
+            self.connect()
+            before = len(self.states)
+            packet = self.packet(0.)
+            packet["inputs"].update(fields)
+            self.send(packet)
+            self.wait_for(lambda: any(not state.connection_valid for state in self.states[before:]))
+            self.close_connection()
+
 
 if __name__ == "__main__":
     unittest.main()

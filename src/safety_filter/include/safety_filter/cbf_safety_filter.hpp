@@ -22,6 +22,10 @@ struct SafetyParameters {
   bool joint_position_enabled{true};
   bool joint_velocity_enabled{true};
   bool joint_acceleration_enabled{true};
+  bool singularity_enabled{false};
+  double singularity_minimum_manipulability{0.05};
+  double singularity_characteristic_length{0.3};  // m; scales linear Jacobian rows
+  double singularity_cbf_frequency{8.0};
   bool table_enabled{true};
   bool self_collision_enabled{true};
   bool inter_arm_collision_enabled{true};
@@ -64,6 +68,14 @@ struct SafetyParameters {
 };
 
 struct SafetyResult {
+  // Per-evaluation work counters; no allocation or ROS publication in the guard.
+  struct GeometryWork {
+    int capsule_transforms{0};
+    int self_pair_distances{0};
+    int inter_arm_pair_distances{0};
+    int obstacle_distances{0};
+    int broadphase_rejections{0};
+  } geometry_work;
   Vector14d safe_torque{Vector14d::Zero()};
   const char* solver_status{"not_configured"};
   double solver_time_seconds{0.0};
@@ -79,6 +91,9 @@ struct SafetyResult {
   int joint_position_constraints{0};
   int joint_velocity_constraints{0};
   int joint_acceleration_constraints{0};
+  int singularity_constraints{0};
+  std::array<double, kArmCount> manipulability{0.0, 0.0};
+  bool singularity_state_invalid{false};
   int table_constraints{0};
   int self_collision_constraints{0};
   int inter_arm_constraints{0};
@@ -89,6 +104,7 @@ struct SafetyResult {
   bool solver_succeeded{false};
   bool fallback_active{false};
   bool fatal_input_fault{false};
+  bool fatal_solver_fault{false};
   double filter_time_seconds{0};
 };
 
@@ -102,7 +118,13 @@ class CbfSafetyFilter {
   CbfSafetyFilter& operator=(const CbfSafetyFilter&) = delete;
 
   bool configure(const SafetyParameters& parameters,
-                 const std::array<ArmIdentity, kArmCount>& identities, std::string* error);
+                 const std::array<ArmIdentity, kArmCount>& identities, std::string* error,
+                 bool prepare_solver = true);
+  // Current-state checks and bounded fallback repair. Never calls OSQP.
+  SafetyResult guard(const Vector14d& preferred, const Vector14d& braking,
+                     const DualArmState& state, double period_seconds, int own_arm,
+                     double peer_age_seconds, double clearance_reserve,
+                     double peer_clearance_reserve = 0);
   void reset();
   SafetyResult filter(const Vector14d& nominal_torque, const DualArmState& state,
                       double period_seconds, const std::array<bool, kArmCount>& motion_active,
@@ -130,6 +152,8 @@ class CbfSafetyFilter {
     Endpoint second;
     double radius{0.0};
     int link_index{0};
+    Eigen::Vector3d bounds_min{Eigen::Vector3d::Zero()};
+    Eigen::Vector3d bounds_max{Eigen::Vector3d::Zero()};
   };
 
   struct Obstacle {
@@ -138,7 +162,7 @@ class CbfSafetyFilter {
   };
 
   void cleanupSolver();
-  bool setupSolver(std::string* error);
+  bool setupSolver(std::string* error, bool prepare_solver);
   void clearRows();
   void setRow(int row, const Vector14d& coefficients, double lower, double upper);
   void disableRow(int row);
@@ -176,6 +200,7 @@ class CbfSafetyFilter {
   int joint_position_row_begin_{0};
   int joint_velocity_row_begin_{0};
   int joint_acceleration_row_begin_{0};
+  int singularity_row_begin_{0};
   int table_row_begin_{0};
   int self_row_begin_{0};
   int inter_arm_row_begin_{0};
@@ -196,6 +221,8 @@ class CbfSafetyFilter {
   std::vector<c_float> linear_cost_;
   std::vector<c_float> lower_bound_;
   std::vector<c_float> upper_bound_;
+  // Current finite-bound rows, in logical order; capacity fixed at configure().
+  std::vector<int> active_constraint_rows_;
   csc p_matrix_{};
   csc a_matrix_{};
   OSQPData data_{};
@@ -205,6 +232,9 @@ class CbfSafetyFilter {
   Vector14d actuator_anchor_{Vector14d::Zero()};
   bool invalid_constraint_{false};
   int last_hold_priority_arm_{-1};
+  bool guard_recovery_{false};
+  double guard_reserve_{0};
+  double guard_peer_reserve_{0};
 };
 
 }  // namespace safety_filter::cbf

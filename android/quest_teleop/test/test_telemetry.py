@@ -101,7 +101,10 @@ class TelemetryTest(unittest.TestCase):
             self.assertTrue(p['pose']['pose_action_active'])
             self.assertEqual(p['pose']['orientation_xyzw'], [0, 0, 0, 1])
             inputs, twist = p['inputs'], p['native_twist']
+            self.assertTrue(inputs['thumbstick_active'])
             if hand == 'left':
+                self.assertAlmostEqual(inputs['thumbstick_xy'][0], .6, places=6)
+                self.assertAlmostEqual(inputs['thumbstick_xy'][1], -.25, places=6)
                 self.assertEqual(p['pose']['position'][0], -0.25)
                 self.assertTrue(inputs['button_x'] and inputs['button_x_active'])
                 self.assertNotIn('button_a', inputs)
@@ -109,6 +112,8 @@ class TelemetryTest(unittest.TestCase):
                 self.assertFalse(twist['linear_valid'])
                 self.assertTrue(twist['angular_valid'])
             else:
+                self.assertAlmostEqual(inputs['thumbstick_xy'][0], -.8, places=6)
+                self.assertAlmostEqual(inputs['thumbstick_xy'][1], .1, places=6)
                 self.assertEqual(p['pose']['position'][0], 0.25)
                 self.assertTrue(inputs['button_a'] and inputs['button_a_active'])
                 self.assertFalse(inputs['button_b_active'])

@@ -4,6 +4,14 @@ from quest_teleop.configuration import read_mapping
 
 ALLOWED = {
     "controller": {
+        "home_joint_position",
+        "nullspace_enabled",
+        "nullspace_stiffness",
+        "nullspace_damping",
+        "nullspace_joint_limit_gain",
+        "nullspace_joint_limit_margin",
+        "nullspace_max_torque",
+        "nullspace_ramp_seconds",
         "lambda_translation",
         "lambda_rotation",
         "gain_translation",
@@ -28,6 +36,11 @@ ALLOWED = {
         "speed_mps",
         "open_speed_mps",
         "grasp_force_n",
+        "cable_diameter_m",
+        "cable_diameter_tolerance_m",
+        "joystick_engage",
+        "joystick_neutral",
+        "mock_object_width_m",
         "grasp_width_m",
         "epsilon_inner_m",
         "epsilon_outer_m",
@@ -45,6 +58,23 @@ ALLOWED = {
         "mock_operation_duration_ms",
     },
     "cbf": {
+        "execution",
+        "worker_period_ms",
+        "maximum_result_age_ms",
+        "maximum_worker_state_age_ms",
+        "maximum_peer_age_ms",
+        "maximum_worker_skew_ms",
+        "recovery_dwell_ms",
+        "model_grace_ms",
+        "braking_acceleration",
+        "fallback_hold_stiffness",
+        "fallback_hold_damping",
+        "guard_clearance_reserve",
+        "peer_motion_bound_mps",
+        "singularity_enabled",
+        "singularity_minimum_manipulability",
+        "singularity_characteristic_length",
+        "singularity_cbf_frequency",
         "table_height",
         "table_minimum_clearance",
         "self_minimum_clearance",
@@ -58,6 +88,34 @@ ALLOWED = {
 }
 
 
+def validate_avoidance(values, section):
+    """Reject malformed new control/safety settings before opening an owner."""
+    import math
+
+    if section == "cbf" and "execution" in values and values["execution"] not in ("asynchronous", "synchronous"):
+        raise ValueError("cbf.execution must be asynchronous or synchronous")
+    boolean = "nullspace_enabled" if section == "controller" else "singularity_enabled"
+    if boolean in values and not isinstance(values[boolean], bool):
+        raise ValueError(f"{section}.{boolean} must be true/false")
+    prefix = "nullspace_" if section == "controller" else "singularity_"
+    for key, value in values.items():
+        if key.startswith(prefix) and key != boolean:
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value <= 0
+            ):
+                raise ValueError(f"{section}.{key} must be finite and positive")
+    if section == "controller" and "home_joint_position" in values:
+        home = values["home_joint_position"]
+        if not isinstance(home, list) or len(home) != 7 or any(
+            isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+            for v in home
+        ):
+            raise ValueError("home_joint_position requires seven finite joint angles")
+
+
 def load_runtime(path, arms):
     data = feature_document(read_mapping(path))
     if set(data) - (set(ALLOWED) | {"arm_settings"}):
@@ -66,6 +124,8 @@ def load_runtime(path, arms):
         section = data.get(key, {})
         if not isinstance(section, dict) or set(section) - allowed:
             raise ValueError(f"unknown or invalid {key} setting")
+        if key in ("controller", "cbf"):
+            validate_avoidance(section, key)
     import math
 
     for key in ("torque_limit_scale", "torque_rate_limit_scale"):
@@ -93,6 +153,8 @@ def load_runtime(path, arms):
             values = settings.get(section, {})
             if not isinstance(values, dict) or set(values) - ALLOWED[section]:
                 raise ValueError(f"{name}: invalid {section} override")
+            if section == "controller":
+                validate_avoidance(values, section)
     return data
 
 
