@@ -219,6 +219,7 @@ class CbfSafetyFilter {
   std::vector<size_t> solver_a_indices_;
   std::vector<int> solver_logical_rows_;
   std::vector<c_float> solver_lower_bound_, solver_upper_bound_;
+  std::vector<c_float> solver_row_scales_, solver_zero_dual_;
   std::vector<c_int> a_rows_;
   std::vector<c_int> a_columns_;
   std::vector<c_float> linear_cost_;

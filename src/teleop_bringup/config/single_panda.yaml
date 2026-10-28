@@ -11,7 +11,7 @@ pipeline:
   start_controller: true
   start_hand: true           # One empty-hand calibration moves the fingers.
   homing_enabled: true
-  cbf_enabled: false
+  cbf_enabled: true
   recording_enabled: true
   mock_measured_pose: false  # Requires start_controller: false.
   # operator_confirm is deliberately launch-only; hardware needs explicit true.
@@ -104,8 +104,8 @@ hand:
   cable_diameter_tolerance_m: 0.002   # Acceptable compressed gap +/- this value.
   grasp_force_n: 30.0                # REQUIRED: set a positive force in N; -1 disables closing.
   worker_poll_ms: 1.0
-  open_speed_mps: 0.1
-  speed_mps: 0.05
+  open_speed_mps: 0.07
+  speed_mps: 0.03
   open_width_m: -1.0        # Full opening gap; -1 uses calibrated maximum.
   command_timeout_ms: 100.0
   max_clock_uncertainty_ms: 10.0

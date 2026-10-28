@@ -1,5 +1,6 @@
 """Actual asynchronous single/dual mock processes: slow and failing worker paths."""
 import os
+import re
 from pathlib import Path
 import signal
 import subprocess
@@ -115,6 +116,15 @@ class AsyncRuntimeTest(unittest.TestCase):
                         raise
                     node.destroy_node()
                 self.assertEqual(process.returncode, 0, logpath.read_text())
+                if infeasible:
+                    paths = re.findall(r"CBF hold model saved to (\S+)", logpath.read_text())
+                    self.assertTrue(paths, logpath.read_text())
+                    for saved in paths:
+                        snapshot = Path(saved)
+                        try:
+                            self.assertEqual(snapshot.read_text().split()[0], "CBF_MODEL_V1")
+                        finally:
+                            snapshot.unlink(missing_ok=True)
 
     def test_single_slow_worker(self):
         self.run_mode()

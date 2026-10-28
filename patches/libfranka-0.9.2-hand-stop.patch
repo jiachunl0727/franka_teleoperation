@@ -1,0 +1,114 @@
+diff --git a/src/gripper.cpp b/src/gripper.cpp
+index 118ff8a..fe53d80 100644
+--- a/src/gripper.cpp
++++ b/src/gripper.cpp
+@@ -48,6 +48,7 @@ GripperState convertGripperState(
+ Gripper::Gripper(const std::string& franka_address)
+     : network_{
+           std::make_unique<Network>(franka_address, research_interface::gripper::kCommandPort)} {
++  network_->enableConcurrentRequests();
+   connect<research_interface::gripper::Connect, research_interface::gripper::kVersion>(
+       *network_, &ri_version_);
+ }
+diff --git a/src/network.h b/src/network.h
+index cc60a30..5a2e65c 100644
+--- a/src/network.h
++++ b/src/network.h
+@@ -31,6 +31,10 @@ class Network {
+ 
+   uint16_t udpPort() const noexcept;
+ 
++  // Configure before sharing the connection. Hand commands can be interrupted
++  // by Stop on the same connection; response waits must not starve its sender.
++  void enableConcurrentRequests() noexcept { concurrent_requests_ = true; }
++
+   template <typename T>
+   T udpBlockingReceive();
+ 
+@@ -90,6 +94,7 @@ class Network {
+ 
+   std::mutex tcp_mutex_;
+   std::mutex udp_mutex_;
++  bool concurrent_requests_{false};
+ 
+   uint32_t command_id_{0};
+ 
+@@ -157,6 +162,9 @@ void Network::tcpReadFromBuffer(std::chrono::microseconds timeout) try {
+   }
+ 
+   int available_bytes = tcp_socket_.available();
++  if (available_bytes == 0) {
++    throw NetworkException("libfranka: server closed connection");
++  }
+   if (pending_response_.empty() &&
+       available_bytes >= static_cast<int>(sizeof(typename T::Header))) {
+     typename T::Header header;
+@@ -231,31 +239,44 @@ template <typename T>
+ typename T::Response Network::tcpBlockingReceiveResponse(uint32_t command_id,
+                                                          std::vector<uint8_t>* vl_buffer) {
+   using namespace std::literals::chrono_literals;  // NOLINT(google-build-using-namespace)
+-  std::unique_lock<std::mutex> lock(tcp_mutex_, std::defer_lock);
+-  decltype(received_responses_)::const_iterator it;
+-  do {
+-    lock.lock();
+-    tcpReadFromBuffer<T>(10ms);
+-    it = received_responses_.find(command_id);
+-    lock.unlock();
+-    std::this_thread::yield();
+-  } while (it == received_responses_.end());
+-
+-  auto message = *reinterpret_cast<const typename T::template Message<typename T::Response>*>(
+-      it->second.data());
+-  if (message.header.size < sizeof(message)) {
+-    throw ProtocolException("libfranka: Incorrect TCP message size.");
+-  }
+-
+-  if (vl_buffer != nullptr && message.header.size != sizeof(message)) {
+-    size_t data_size = message.header.size - sizeof(message);
+-    std::vector<uint8_t> data_buffer(data_size);
+-    std::memcpy(data_buffer.data(), &it->second[sizeof(message)], data_size);
+-    *vl_buffer = data_buffer;
++  while (true) {
++    {
++      std::unique_lock<std::mutex> lock(tcp_mutex_);
++      auto it = received_responses_.find(command_id);
++      if (it == received_responses_.end()) {
++        tcpReadFromBuffer<T>(concurrent_requests_ ? 0us : 10ms);
++        it = received_responses_.find(command_id);
++      }
++      if (it != received_responses_.end()) {
++        using Message = typename T::template Message<typename T::Response>;
++        if (it->second.size() < sizeof(Message)) {
++          throw ProtocolException("libfranka: Incorrect TCP message size.");
++        }
++        const auto message = *reinterpret_cast<const Message*>(it->second.data());
++        if (message.header.size != it->second.size()) {
++          throw ProtocolException("libfranka: Incorrect TCP message size.");
++        }
++        if (vl_buffer != nullptr && message.header.size != sizeof(message)) {
++          vl_buffer->assign(it->second.begin() + sizeof(message), it->second.end());
++        }
++        // Copy and erase under the lock: another receiver can insert a reply
++        // and rehash the map as soon as the lock is released.
++        received_responses_.erase(it);
++        return message.getInstance();
++      }
++    }
++    if (concurrent_requests_) {
++      try {
++        // Wait outside the send/read mutex. Another receiver may drain the
++        // socket first; the next protected read is deliberately nonblocking.
++        tcp_socket_.poll(10000, Poco::Net::Socket::SELECT_READ);
++      } catch (const Poco::Exception& e) {
++        throw NetworkException(std::string("libfranka: TCP receive: ") + e.what());
++      }
++    } else {
++      std::this_thread::yield();
++    }
+   }
+-
+-  received_responses_.erase(it);
+-  return message.getInstance();
+ }
+ 
+ template <typename T, uint16_t kLibraryVersion>

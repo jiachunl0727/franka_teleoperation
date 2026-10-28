@@ -216,6 +216,51 @@ TEST(AsyncSafety, FeasibleCurrentCorrectionDoesNotLatchBrakingDuringChangingTarg
   EXPECT_GE(out.reply.result.safe_torque[0], 6.45);
   EXPECT_LE(out.reply.result.safe_torque[0], 7.001);
 }
+
+TEST(AsyncSafety, RealWorkerWithCoupledLightWristTracksChangingTargetsWithoutLatchingHold) {
+  Fixture f;
+  f.safety.singularity_enabled = true;
+  f.safety.self_collision_enabled = true;
+  f.configure();
+  sf::cbf::CbfSafetyFilter worker;
+  std::string error;
+  ASSERT_TRUE(worker.configure(f.safety, identities(), &error)) << error;
+  auto r = request();
+  r.state.mass.diagonal() << 2.5, 2, 1.2, .7, .03, .02, .006;
+  sf::cbf::Matrix7d l = sf::cbf::Matrix7d::Identity();
+  l(3, 1) = .15;
+  l(5, 3) = .2;
+  l(6, 2) = .1;
+  r.state.mass = l * r.state.mass * l.transpose();
+  r.motion_active = true;
+  sf::SafetyReply reply;
+  double maximum_command = 0;
+  for (int cycle = 1; cycle <= 1000; ++cycle) {
+    r.cycle = cycle;
+    r.stamp_ns = start + cycle * 1000000;
+    for (int joint = 0; joint < 7; ++joint)
+      r.nominal[joint] = 2 * std::sin(.01 * cycle + joint);
+    const sf::SafetyReply* incoming = nullptr;
+    if (cycle % 5 == 1) {
+      sf::cbf::DualArmState model;
+      model.arm[0] = r.state;
+      sf::cbf::Vector14d nominal = sf::cbf::Vector14d::Zero();
+      nominal.head<7>() = r.nominal;
+      reply = success(r);
+      reply.result = worker.filter(nominal, model, .005, {true, false});
+      ASSERT_TRUE(reply.result.solver_succeeded) << reply.result.solver_status;
+      incoming = &reply;
+    }
+    const auto out = f.local.update(r, nullptr, incoming, r.stamp_ns);
+    ASSERT_TRUE(out.worker_usable);
+    ASSERT_FALSE(out.degraded) << "cycle=" << cycle << " status=" << out.reply.result.solver_status;
+    EXPECT_FALSE(out.reply.result.fallback_active);
+    EXPECT_LE(out.reply.result.maximum_constraint_violation, 1e-3);
+    maximum_command = std::max(maximum_command, out.reply.result.safe_torque.norm());
+    r.state.previous_torque = out.reply.result.safe_torque.head<7>();
+  }
+  EXPECT_GT(maximum_command, .1);
+}
 TEST(AsyncSafety, FailedWorkerBrakesAndHoldsUntilReleaseReengagementAndHealthyDwell) {
   Fixture f;
   f.limits.recovery_dwell_ns = 2000000;
@@ -229,6 +274,8 @@ TEST(AsyncSafety, FailedWorkerBrakesAndHoldsUntilReleaseReengagementAndHealthyDw
   auto out = f.local.update(r, nullptr, &failed, r.stamp_ns);
   EXPECT_TRUE(out.degraded);
   EXPECT_TRUE(out.entered_degraded);
+  EXPECT_STREQ(out.degraded_cause, "solver_not_verified");
+  EXPECT_EQ(out.degraded_since_cycle, r.cycle);
   EXPECT_LT(out.reply.result.safe_torque[0], 0);
   EXPECT_FALSE(out.reply.result.fatal_solver_fault);
   // Healthy results and held trigger alone cannot resume tracking.
@@ -238,6 +285,8 @@ TEST(AsyncSafety, FailedWorkerBrakesAndHoldsUntilReleaseReengagementAndHealthyDw
     auto ok = success(r);
     out = f.local.update(r, nullptr, &ok, r.stamp_ns);
     EXPECT_TRUE(out.degraded);
+    EXPECT_STREQ(out.degraded_cause, "solver_not_verified");
+    EXPECT_EQ(out.degraded_since_cycle, 1u);
   }
   r = request(8);
   r.release_source_ns = r.stamp_ns;

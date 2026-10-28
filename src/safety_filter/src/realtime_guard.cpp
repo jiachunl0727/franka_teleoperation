@@ -128,7 +128,48 @@ SafetyResult CbfSafetyFilter::guard(const Vector14d& preferred, const Vector14d&
     ++repair_passes;
     complete = violation(chosen, false, false) <= tolerance;
   }
-  const bool tracking_repaired = complete && repair_passes > 0;
+  bool tracking_repaired = complete && repair_passes > 0;
+  bool tracking_limited = false;
+  if (!complete) {
+    // A short projection budget can miss a feasible point in coupled dynamics.
+    // Use a currently verified seed, then retain as much of the repaired
+    // tracking direction as every affine constraint permits. This is a bounded
+    // line calculation, not a solver or an unchecked replay of old torque.
+    Vector14d seed = bounded(actuator_anchor_);
+    if (violation(seed, false, false) > tolerance)
+      seed = bounded(braking);
+    if (violation(seed, false, false) > tolerance) {
+      // Zero modeled acceleration is another useful seed near rest. It is
+      // accepted only after actuator clamping and all current geometry/joint
+      // checks; compensation alone is never assumed safe near a boundary.
+      Vector14d compensation = Vector14d::Zero();
+      compensation.segment<7>(own * 7) = state.arm[own].coriolis;
+      seed = bounded(compensation);
+    }
+    if (violation(seed, false, false) <= tolerance) {
+      const Vector14d direction = chosen - seed;
+      double fraction = 1.;
+      for (int row : active_constraint_rows_) {
+        double origin = 0, slope = 0;
+        for (int j = own * 7; j < own * 7 + 7; ++j) {
+          const double a = a_values_[j * constraint_count_ + row];
+          origin += a * seed[j];
+          slope += a * direction[j];
+        }
+        if (slope > 0 && upper_bound_[row] < .5 * OSQP_INFTY)
+          fraction = std::min(fraction, (upper_bound_[row] + tolerance - origin) / slope);
+        if (slope < 0 && lower_bound_[row] > -.5 * OSQP_INFTY)
+          fraction = std::min(fraction, (lower_bound_[row] - tolerance - origin) / slope);
+      }
+      // Stay inside the computed interval in the presence of roundoff. The
+      // same original-unit tolerance and independent full check still apply.
+      const Vector14d limited = seed + std::clamp(fraction * (1. - 1e-9), 0., 1.) * direction;
+      if (violation(limited, false, false) <= tolerance) {
+        chosen = limited;
+        complete = tracking_limited = true;
+      }
+    }
+  }
   if (!complete) {
     // Finite constraint-repair sweeps for a braking/holding command. No solver,
     // convergence wait, allocation, or autonomous target retreat in this path.
@@ -149,9 +190,12 @@ SafetyResult CbfSafetyFilter::guard(const Vector14d& preferred, const Vector14d&
       best_score = anchor_score;
     }
     // Share the original twelve-sweep budget with tracking correction. The
-    // final four sweeps still prioritize mandatory table/actuator constraints.
+    // final four prioritize mandatory rows if no mandatory-valid candidate
+    // exists. Otherwise retain that candidate while continuing full repair;
+    // dropping secondary rows at sweep eight can strand a nearly feasible
+    // torque just outside tolerance and cause a false hold.
     for (; repair_passes < 12; ++repair_passes) {
-      project(candidate, repair_passes >= 8);
+      project(candidate, repair_passes >= 8 && !found_hard);
       const double all = violation(candidate, false, false);
       const bool feasible_hard = violation(candidate, true, false) <= tolerance;
       const double score = violation(candidate, false, true);
@@ -169,7 +213,12 @@ SafetyResult CbfSafetyFilter::guard(const Vector14d& preferred, const Vector14d&
     }
     chosen = best;
     result.fatal_solver_fault = !found_hard;
-    result.fallback_active = true;
+    // A fully verified command is ordinary constraint intervention, whichever
+    // seed produced it. Do not latch a fault just because the first four
+    // tracking sweeps missed it. Worker/model faults are latched separately by
+    // AsyncSafetyController; genuinely relaxed constraints remain fallback.
+    result.fallback_active = !complete;
+    tracking_repaired |= complete;
   }
   result.safe_torque = chosen;
   result.solver_succeeded = complete;
@@ -193,11 +242,11 @@ SafetyResult CbfSafetyFilter::guard(const Vector14d& preferred, const Vector14d&
   result.arm_intervention_norm[own] = result.intervention_norm;
   result.solver_status =
       result.fatal_solver_fault ? "no_valid_mandatory_table_command"
-      : complete
-          ? (result.fallback_active
-                 ? "local_braking_constraints_satisfied"
-                 : (tracking_repaired ? "local_candidate_repaired" : "local_candidate_verified"))
-          : "local_braking_secondary_constraints_relaxed";
+      : complete                ? (result.fallback_active ? "local_braking_constraints_satisfied"
+                                                          : (tracking_limited    ? "local_candidate_limited"
+                                                             : tracking_repaired ? "local_candidate_repaired"
+                                                                                 : "local_candidate_verified"))
+                                : "local_braking_secondary_constraints_relaxed";
   result.filter_time_seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
   return result;

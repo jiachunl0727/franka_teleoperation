@@ -292,6 +292,31 @@ software allowance; this adds no commanded travel.
 
 ### Command timing and compatibility
 
+Closing speed limits the full-travel grasp motion; it does not set stop-command
+latency. Centering submits stop promptly, but the blocking SDK call includes
+waiting for its shared TCP connection and the robot's acknowledgement. In the
+2026-10-28 trial, stop-request input ages were about 1 ms while individual SDK
+stop calls took 0.27–4.37 s. At 0.01 m/s, four seconds of continued motion would
+add about 40 mm of closing travel. A slower closing speed does not make stop
+instantaneous.
+
+The original pinned SDK polls TCP responses while holding the same mutex used
+to send requests. A running grasp's receiver can monopolize that mutex and delay
+another thread's Stop send. The repository now applies a
+[scoped SDK transport patch](../patches/README.md): Hand response waits poll
+outside that mutex, and concurrent response lookup/copy/removal stays protected.
+The arm connection keeps its existing polling cadence. Apply the patch and
+rebuild **libfranka as well as its consumers**, then restart the launch; rebuilding
+only `teleop_gripper` does not replace the SDK. The dependency-fetch script
+applies the patch automatically for a fresh workspace.
+
+`stop_call_ms` still includes robot acknowledgement and transport time, and does
+not measure mechanical stopping. The loopback SDK regression checks that Stop
+reaches a fake server before the outstanding motion completes; physical latency
+must be checked in the next operator trial. The continuous full-travel Hand path
+remains in place; fixed-distance stepping is not used as a workaround.
+
+
 Quest samples the joystick each OpenXR frame and sends its signed axes plus
 availability through USB. A best-effort subscription retains one latest sample, avoiding a reliable
 backlog; the input callback dispatches neutral stops before diagnostic publication. Blocking `grasp`, `move`, `stop` and readback run
@@ -332,6 +357,8 @@ all active ROS message consumers before restarting the pipeline.
 | No saved trajectory report data | A live PlotJuggler window does not record topics. Start/finalize an episode and check that it includes `tracking_samples`; see [TRAJECTORY_MONITORING.md](TRAJECTORY_MONITORING.md). |
 | Menu does not start the next episode | Inspect `/quest/recording_status` and the `Recording` / `Menu press` log lines. They distinguish finalization, missing publishers, rejected input and an active recording. Homing does not suppress Menu. |
 | Only small movements or intermittent response | Compare `Mapper state` and `Motion state` lines: source tracking/clutch readiness, measured-pose freshness, requested versus enabled motion, safety fallback, homing, target error and torque norms are reported separately. A ready FCI connection does not imply active Cartesian tracking. |
+| Gripper responds but arm remains still | Arm motion requires the assigned **index trigger**, independently of joystick gripper input. Check `Mapped input: motion_requested=1`. A valid `trigger released` state keeps position holding; it is not a CBF rejection. |
+| `Safety hold entered` after a motion request | Read its first cause, guard status and violation. Fully verified local repair should continue without latching; a genuine worker/model/constraint failure still requires healthy results and release/re-engagement. The first hold model is saved under `/tmp/franka-cbf-hold-arm-...txt` outside the realtime callback. |
 
 Controller or Hand process failure stops combined bringup. Keep its terminal
 output when investigating a failure. Parameters are loaded at startup; edit

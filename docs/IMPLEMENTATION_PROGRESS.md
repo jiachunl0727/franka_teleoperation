@@ -15,6 +15,131 @@ Physical FCI/device operations remain operator actions.
 
 ## Stages and evidence
 
+### Actual-trial feasible-command latch correction (2026-10-28)
+
+- Preserved the 16:39 and 16:40 trial logs (arm PIDs 581/1161) under
+  `log/diagnostics/arm_hold_review_20261028/`. Both acquired FCI successfully
+  with current errors empty. The first received valid mapped trigger requests
+  and entered eight holds, all explicitly caused by
+  `local_guard_repair_exhausted`. Six reported
+  `local_braking_constraints_satisfied`, with residuals below 0.001, including
+  zero. Two reported relaxed residuals of 0.0010065 and 0.00109545.
+- The six feasible holds expose a separate classification bug: the guard found
+  a fully verified torque in its later repair stage but set `fallback_active`
+  unconditionally, which caused the asynchronous owner to latch. Every fully
+  verified repair now reports ordinary intervention regardless of its seed.
+  Worker/model/peer faults still latch independently, and unresolved secondary
+  constraints still cause braking/holding.
+- Kept the twelve-sweep cap and the original feasibility tolerance. Once a
+  mandatory-valid candidate is retained, later sweeps continue full constraint
+  repair instead of dropping secondary rows at sweep eight. If no mandatory
+  candidate exists, the last four sweeps prioritize actuator/table rows. A
+  bounded Coriolis-compensation seed is also considered only after independent
+  verification against every current row. No saved thresholds/gains changed.
+- A regression near the acceleration boundary reproduces three feasible-command
+  false holds with the previous guard; all pass with the correction, including
+  zero-allocation and current torque-slew checks. Added twelve feedback cases
+  using the actual Cartesian law, worker and local guard: positive/negative
+  translation and rotation about each axis, evolving synthetic coupled inertia,
+  joint integration, geometry/derivative history and filtered torque feedback.
+  These check substantial target progress as well as no latched hold and full
+  constraint verification. They are software regression evidence, not an exact
+  replay of the hardware dynamics or a physical settling-time guarantee.
+- The second trial logs contain no arm motion request: sampled right index
+  trigger values were zero, the mapper reported trigger release, and there
+  was no safety latch. These throttled logs cannot exclude a missed brief pulse. Joystick Hand activity does not engage arm tracking. The operator
+  confirms engagement in the first trial and is unsure about the second.
+  Fresh valid index-trigger release/press remains mandatory.
+- The first model snapshot of future latched holds is handed through a bounded
+  queue to non-realtime file output, using
+  `/tmp/franka-cbf-hold-arm-ARM-TIMESTAMP.txt` and an available peer snapshot.
+  This retains actual state/inertia/geometry for further numerical diagnosis;
+  no callback file I/O or physical-device query is added.
+- Validation: affected packages rebuilt; all 136 fresh cases pass (safety 59,
+  controllers 77), including the twelve feedback cases and mock hold-model
+  capture. The previous guard fails the targeted feasible-command regression;
+  the corrected guard passes it. Gripper stop source/SDK patch, APK, user-edited
+  configuration and physical devices were left unchanged. Hardware tracking
+  remains an operator verification step.
+
+### SDK Stop transport correction and feasible local CBF tracking (2026-10-28)
+
+- The next hardware owner log (PID 28774), preserved under
+  `log/diagnostics/stop_transport_cbf_review_20261028/`, reports usable worker
+  results (`worker_rejection=none`) but repeated latched safety holding. The
+  previous worker-conditioning correction is working in those samples. The
+  sampled log does not preserve the exact first callback that entered each hold.
+- Reproduced a separate local-guard problem with dense coupled light-wrist
+  dynamics: 344/500 feasible cases entered fallback after the four tracking
+  projection sweeps. A failed bounded projection is not proof of infeasibility.
+  The guard now checks current-torque/braking seeds against every current row,
+  computes the allowed segment toward tracking, and independently verifies the
+  limited torque. The same 500 cases produce zero fallbacks, with nonzero
+  commands and unchanged acceleration/actuator bounds. The twelve projection
+  sweep cap remains; the segment calculation uses bounded extra row scans.
+- Latched holds retain their first cause, cycle, guard status and residual for
+  non-realtime reporting, so a brief local repair failure cannot disappear
+  behind a later generic release/re-engagement message. Actual worker/model/
+  peer failure still brakes/holds and requires deliberate recovery.
+- The operator explicitly requests resolution of SDK Stop latency. Added a
+  scoped patch to pinned libfranka 0.9.2: Hand response polling waits outside
+  the TCP mutex needed to send Stop. Response cache access remains protected,
+  including copy/erase, and malformed/closed responses raise an exception.
+  The arm connection retains its existing response-polling cadence. No Hand
+  command stepping, automatic close retries or force increase was introduced.
+- The actual original SDK fails the loopback regression: the fake server times
+  out waiting for Stop while a motion remains unfinished. The patched SDK
+  passes concurrent grasp/move cancellation, both response orders, fragmented
+  responses, undersized responses and disconnect. This establishes transport
+  behavior, not mechanical stopping time or firmware latency.
+- The dependency import applies a tracked patch automatically. Existing
+  workspaces can run `scripts/apply_teleop_dependency_patches.sh`; fresh and
+  repeated application were checked without network access. Rebuild libfranka
+  plus consumers and restart the launch. See [patch setup](../patches/README.md).
+- Validation: rebuilt SDK, Hand, safety and controller packages; all 168
+  affected cases pass (safety 58, controllers 65, Hand 45), with zero failures,
+  errors or skips. The loopback run measured a maximum Stop completion of
+  23.002 ms across 12 cancellations; this is not hardware latency. Physical
+  response still needs an operator trial. Saved CBF activation, closing speed,
+  force and geometry values were preserved; no physical device was operated.
+
+### CBF convergence correction and full-travel Hand stop diagnosis (2026-10-28)
+
+- Preserved the latest hardware owner/Hand logs (PIDs 25824/25826) under
+  `log/diagnostics/cbf_hand_latency_20261028/`. Valid mapped Quest requests
+  encountered worker `iteration_limit` failures and latched braking/holding.
+  Manipulability was about 2.166 versus a 0.050 minimum; the earlier conjecture
+  about a low starting manipulability does not explain this trial.
+- Reproduced convergence loss on Panda-kinematics software fixtures with
+  synthetic light wrist inertia/coupled dynamics: 27/500 failed solves for the
+  diagonal model and 323/500 for the coupled model at the original 100-iteration
+  budget. OSQP setup preceded model data, so setup-time scaling saw zero dynamic
+  constraint coefficients. Later inverse-mass rows had very different scales.
+- Equivalent row normalization, zeroing stale dual warm starts at reset/exact
+  feasible nominal shortcuts, and at most 32 candidate-refinement passes in
+  the worker produce zero failed solves in both 500-case sequences. Every
+  accepted candidate must still satisfy every original active row at the same
+  original-unit tolerance. Torque/rate/geometry limits, result-age limits,
+  callback work budget and explicit re-engagement policy are unchanged.
+- A real worker/local-guard fixture exercises 1000 changing-target callbacks
+  with coupled inertia and a 5 ms worker cadence, without a worker failure or
+  latched hold. Allocation instrumentation covers the refined-worker path.
+  This is numeric/handoff validation, not physical robot dynamics validation.
+- Console reports now include `worker_rejection` and the worker candidate's
+  original-unit violation, distinguishing a failed feasibility certificate
+  from a pending context or expired result. No ROS message schema/APK change.
+- Hand neutral stop requests had roughly 1 ms source age; individual blocking
+  SDK stop calls lasted 0.27–4.37 s. The SDK shares a TCP mutex between request
+  sending and response polling, so contention can contribute. Existing timing
+  cannot separate waiting to send from firmware acknowledgement or establish
+  the exact instant of mechanical stopping. Lowering closing speed affects
+  travel rate, not stop latency. The restored full-travel Hand source and SDK
+  dependencies remain unchanged; fixed-distance stepping was not reintroduced.
+- Validation: normal overlay rebuilt; all 142 affected cases pass (safety 57,
+  controllers 65, bringup 20), with zero failures/errors/skips. Current saved
+  CBF activation and 0.01 m/s closing speed are operator settings and were
+  preserved. No physical device was operated.
+
 ### Restore continuous full-travel gripper commands (2026-10-28)
 
 - The operator reports that held input still stopped after two increments and

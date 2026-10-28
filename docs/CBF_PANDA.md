@@ -74,12 +74,35 @@ OSQP workspace or calling the solver. It verifies a bounded preferred torque.
 If needed, up to four fixed sweeps correct that tracking candidate. A correction
 that passes **every active current-state row** is normal safety intervention
 (`local_candidate_repaired`), so changing references do not automatically latch
-braking. If no such correction is found, the guard starts from a braking/holding
-command. Both stages share at most 12 sweeps total; the final four prioritize
-mandatory actuator/table rows. No convergence wait or unbounded iteration is
-used. A fully feasible preferred torque needs no repair. Before escalating a failed
-repair, the actual current robot torque is also bounded and checked against the
-current mandatory rows; an old worker torque is never replayed unchecked.
+braking. If those sweeps do not find a feasible point, the guard checks the
+bounded current torque, bounded braking torque and bounded Coriolis
+compensation as possible seeds.
+A seed must pass **all** current rows. Along the segment from that seed toward
+the repaired tracking candidate, each affine row gives an allowed fraction;
+the smallest fraction limits the command. An independent full check at the same
+original-unit tolerance must pass before acceptance (`local_candidate_limited`).
+This keeps feasible safety-limited tracking from latching solely because four
+projection sweeps did not converge on coupled dynamics.
+
+If no verified seed/segment is available, the braking/holding fallback remains.
+The projection stages share at most 12 sweeps total. If a mandatory-valid
+candidate has already been retained, the remaining sweeps continue repairing
+all active rows; otherwise the final four prioritize mandatory actuator/table
+rows. A command that passes every row is normal intervention even when the
+later repair stage found it. Only an unresolved full-constraint violation is
+reported as local fallback. Worker/model/peer faults still latch independently.
+Segment limiting adds a fixed number of row scans, no solver, allocation or convergence wait. A fully feasible preferred
+torque needs no repair. Neither the seed nor a worker torque is replayed unchecked.
+
+A latched transition now retains its first cause, cycle, local-guard status and
+constraint violation until recovery. The non-realtime console emits
+`Safety hold entered` even if the transition itself fell between telemetry
+samples. This separates a local repair failure from worker failure, peer loss
+or model grace instead of reporting only the later recovery gate.
+A bounded callback-to-reporter queue also saves the first model of a hold as
+`/tmp/franka-cbf-hold-arm-ARM-TIMESTAMP.txt` (and `.peer` for an available peer).
+File writes occur outside the torque callback. These use the same
+`CBF_MODEL_V1` column-major format as exceptional-stop diagnostics.
 
 The fallback joint reference decelerates its desired velocity toward zero using
 `braking_acceleration`, with model acceleration feedforward and joint PD damping.
@@ -129,6 +152,24 @@ subject to linear torque inequalities `lower <= A*tau <= upper`. There are 14
 variables; inactive-arm torques are zero. Franka's gravity-compensated torque
 convention gives `qdd = M^-1 (tau - coriolis)`. Tracking is a soft objective;
 worker constraints have no slack variables and may be infeasible together.
+
+The workspace is configured before the first model snapshot, so OSQP's initial
+scaling sees zero-valued dynamic rows. Each subsequent solve explicitly scales
+rows with coefficient norm above one and scales their finite bounds by the same
+positive factor. This preserves the inequalities while improving conditioning
+for light wrist inertia and coupled joint dynamics. The independent acceptance
+check always uses the original rows, units and feasibility tolerance.
+
+A solved or iteration-limited primal candidate receives up to 32 bounded
+projection passes to remove small residuals in original units. Each pass clamps
+torque magnitude/rate bounds; the final candidate is accepted only if every
+original active row passes. `solved (verified feasibility repair)` reports a
+successful correction. This work runs in the background worker, not the 1 kHz
+callback; the callback's existing repair budget is unchanged. A failed repair
+still enters the existing fallback/re-engagement path. Exact feasible nominal
+shortcuts and reset clear the dual warm start so multipliers from an older
+problem do not persist.
+
 
 - **Joint position:** Panda bounds tightened by 0.10 rad, with
   `hddot + 2*zeta*omega*hdot + omega^2*h >= 0`; default omega 8 s^-1, zeta 1.
@@ -318,7 +359,10 @@ values and model motion bounds are commissioning settings, not delay certificate
 current nominal torque, residuals, active constraints, table/self/inter-arm
 clearances, manipulability, local filter time, worker solve time/status/source
 cycles/age, result usability, peer usability, model reuse, braking/holding state,
-fallback reason and shared stop reason. Original worker source timestamps remain
+fallback reason and shared stop reason. The console motion report also names
+`worker_rejection` (for example `solver_not_verified`, `context_pending` or
+`result_expired`) and reports the worker candidate's original-unit constraint
+violation. A raw `solved` status alone does not establish accepted feasibility. Original worker source timestamps remain
 visible when its correction is reused. A locally feasible braking command does
 not imply that the worker succeeded or tracking is re-enabled.
 

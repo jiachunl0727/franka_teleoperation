@@ -57,6 +57,20 @@ command builds the teleoperation pipeline, excluding the legacy Panda demos.
 Libfranka's own tests/examples default to off; an unused `BUILD_TESTING` warning
 from libfranka is harmless because that option controls the ROS packages.
 
+The dependency-fetch script also applies the repository's
+[Hand Stop transport patch](patches/README.md). For an existing checkout after
+updating this repository, rebuild the SDK together with its consumers:
+
+```bash
+bash scripts/apply_teleop_dependency_patches.sh
+colcon build --base-paths src --symlink-install --packages-up-to teleop_bringup \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+source install/setup.bash
+```
+
+Stop any existing teleoperation launch before rebuilding; restart it afterward
+so every worker loads the updated library.
+
 To exist the container:
 ```
 docker rm -f franka-teleop

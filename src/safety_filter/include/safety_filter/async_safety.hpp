@@ -9,6 +9,12 @@ struct AsyncSafetyOutput {
   uint64_t worker_age_ns{0};
   std::array<uint64_t, 2> worker_cycles{};
   const char* worker_status{"not_available"};
+  const char* worker_rejection{"not_available"};
+  double worker_candidate_violation{0};
+  const char* degraded_cause{"none"};
+  const char* degraded_guard_status{"none"};
+  uint64_t degraded_since_cycle{0};
+  double degraded_guard_violation{0};
   const char* reason{"startup"};
 };
 // One instance per FCI owner. All mutable state is owned by that callback.
@@ -35,6 +41,10 @@ class AsyncSafetyController {
   cbf::ArmState last_model_;
   uint64_t model_ns_{0}, healthy_since_{0}, release_before_fault_{0};
   uint64_t pending_epoch_{0}, pending_since_{0};
+  const char* degraded_cause_{"none"};
+  const char* degraded_guard_status_{"none"};
+  uint64_t degraded_since_cycle_{0};
+  double degraded_guard_violation_{0};
   cbf::Vector7d brake_q_{cbf::Vector7d::Zero()}, brake_dq_{cbf::Vector7d::Zero()};
 };
 }  // namespace safety_filter

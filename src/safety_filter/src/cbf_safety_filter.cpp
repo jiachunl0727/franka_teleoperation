@@ -334,6 +334,8 @@ bool CbfSafetyFilter::setupSolver(std::string* error, bool prepare_solver) {
   const auto solver_count = static_cast<c_int>(solver_logical_rows_.size());
   solver_lower_bound_.assign(solver_count, -OSQP_INFTY);
   solver_upper_bound_.assign(solver_count, OSQP_INFTY);
+  solver_row_scales_.assign(solver_count, 1.0);
+  solver_zero_dual_.assign(solver_count, 0.0);
   a_columns_.resize(kDualArmDof + 1);
   for (int column = 0; column < kDualArmDof; ++column) {
     a_columns_[column] = static_cast<c_int>(a_rows_.size());
@@ -420,6 +422,7 @@ void CbfSafetyFilter::reset() {
   if (workspace_ != nullptr) {
     std::array<c_float, kDualArmDof> zero{};
     static_cast<void>(osqp_warm_start_x(workspace_, zero.data()));
+    static_cast<void>(osqp_warm_start_y(workspace_, solver_zero_dual_.data()));
   }
 }
 
@@ -1167,7 +1170,8 @@ SafetyResult CbfSafetyFilter::filter(const Vector14d& nominal_torque,
     if (!parameters_.active_arms[arm])
       feasible_nominal.segment<kJointsPerArm>(arm * kJointsPerArm).setZero();
   if (weight_result == 0 && constraint_violation(feasible_nominal) == 0. &&
-      osqp_warm_start_x(workspace_, feasible_nominal.data()) == 0) {
+      osqp_warm_start_x(workspace_, feasible_nominal.data()) == 0 &&
+      osqp_warm_start_y(workspace_, solver_zero_dual_.data()) == 0) {
     result.safe_torque = feasible_nominal;
     result.solver_status = "feasible_nominal";
     result.solver_succeeded = true;
@@ -1183,15 +1187,33 @@ SafetyResult CbfSafetyFilter::filter(const Vector14d& nominal_torque,
     return finish();
   }
 
+  // OSQP is configured before a model is available, with zero-valued dynamic
+  // rows. Its setup-time scaling therefore cannot condition later M^-1/J rows.
+  // Normalize equivalent inequalities on every update; retain the original
+  // rows and units for the independent hard-feasibility check below.
+  for (size_t index = 0; index < solver_logical_rows_.size(); ++index) {
+    const int row = solver_logical_rows_[index];
+    double squared = 0;
+    for (int joint = 0; joint < kDualArmDof; ++joint) {
+      const double a = a_values_[joint * constraint_count_ + row];
+      squared += a * a;
+    }
+    solver_row_scales_[index] = 1. / std::max(1., std::sqrt(squared));
+  }
   for (size_t index = 0; index < solver_a_values_.size(); ++index)
-    solver_a_values_[index] = a_values_[solver_a_indices_[index]];
+    solver_a_values_[index] =
+        a_values_[solver_a_indices_[index]] * solver_row_scales_[a_rows_[index]];
   const c_int matrix_result = osqp_update_A(workspace_, solver_a_values_.data(), OSQP_NULL,
                                             static_cast<c_int>(solver_a_values_.size()));
   const c_int cost_result = osqp_update_lin_cost(workspace_, linear_cost_.data());
   for (size_t index = 0; index < solver_logical_rows_.size(); ++index) {
     const auto row = solver_logical_rows_[index];
-    solver_lower_bound_[index] = lower_bound_[row];
-    solver_upper_bound_[index] = upper_bound_[row];
+    solver_lower_bound_[index] = lower_bound_[row] > -.5 * OSQP_INFTY
+                                     ? lower_bound_[row] * solver_row_scales_[index]
+                                     : -OSQP_INFTY;
+    solver_upper_bound_[index] = upper_bound_[row] < .5 * OSQP_INFTY
+                                     ? upper_bound_[row] * solver_row_scales_[index]
+                                     : OSQP_INFTY;
   }
   const c_int bound_result =
       osqp_update_bounds(workspace_, solver_lower_bound_.data(), solver_upper_bound_.data());
@@ -1230,6 +1252,35 @@ SafetyResult CbfSafetyFilter::filter(const Vector14d& nominal_torque,
       // objective is soft; every actuator/CBF bound is hard. Retain such an
       // iterate only after independently checking *all* current bounds.
       result.safe_torque = clampToActuatorBounds(result.safe_torque, period_seconds);
+      // A solved normalized problem can still have a small residual in the
+      // original physical units. Repair only this primal candidate, with a
+      // fixed work budget, then independently check every original hard row.
+      // A failed repair never turns an infeasible iterate into a certificate.
+      bool repaired = false;
+      for (int pass = 0; pass < 32 && constraint_violation(result.safe_torque) >
+                                          parameters_.solver_feasibility_tolerance;
+           ++pass) {
+        for (int row : active_constraint_rows_) {
+          double dot = 0, squared = 0;
+          for (int joint = 0; joint < kDualArmDof; ++joint) {
+            const double a = a_values_[joint * constraint_count_ + row];
+            dot += a * result.safe_torque[joint];
+            squared += a * a;
+          }
+          if (squared < 1e-20)
+            continue;
+          const double correction = dot < lower_bound_[row]   ? lower_bound_[row] - dot
+                                    : dot > upper_bound_[row] ? upper_bound_[row] - dot
+                                                              : 0.;
+          if (correction == 0)
+            continue;
+          for (int joint = 0; joint < kDualArmDof; ++joint)
+            result.safe_torque[joint] +=
+                correction * a_values_[joint * constraint_count_ + row] / squared;
+          result.safe_torque = clampToActuatorBounds(result.safe_torque, period_seconds);
+          repaired = true;
+        }
+      }
       bounded_candidate = result.safe_torque;
       candidate_available = true;
       const double violation = constraint_violation(result.safe_torque);
@@ -1237,6 +1288,8 @@ SafetyResult CbfSafetyFilter::filter(const Vector14d& nominal_torque,
       result.solver_succeeded = violation <= parameters_.solver_feasibility_tolerance;
       if (iteration_limit && result.solver_succeeded) {
         result.solver_status = "maximum iterations reached (feasible iterate)";
+      } else if (result.solver_succeeded && repaired) {
+        result.solver_status = "solved (verified feasibility repair)";
       }
     }
   }

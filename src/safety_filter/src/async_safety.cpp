@@ -137,6 +137,18 @@ AsyncSafetyOutput AsyncSafetyController::update(const ModelRequest& request,
            limits_.result_velocity_change);
   out.worker_usable =
       worker_model_usable && (!safety_.enabled || cached_.epoch[arm_] == request.epoch);
+  out.worker_rejection =
+      !safety_.enabled                                                     ? "disabled"
+      : !have_result_                                                      ? "not_available"
+      : !cached_.result.solver_succeeded || cached_.result.fallback_active ? "solver_not_verified"
+      : cached_.result.fatal_input_fault                                   ? "invalid_worker_model"
+      : cached_.source_ns[arm_] > now || cached_.completed_ns > now        ? "future_timestamp"
+      : out.worker_age_ns > limits_.maximum_result_age_ns                  ? "result_expired"
+      : !worker_model_usable                 ? "invalid_or_changed_model"
+      : cached_.epoch[arm_] != request.epoch ? "context_pending"
+                                             : "none";
+  if (have_result_)
+    out.worker_candidate_violation = cached_.result.solver_candidate_constraint_violation;
   const bool healthy = out.worker_usable && out.peer_usable && !model_reused_;
   if (pending_epoch_ != request.epoch) {
     pending_epoch_ = request.epoch;
@@ -157,19 +169,23 @@ AsyncSafetyOutput AsyncSafetyController::update(const ModelRequest& request,
   } else
     healthy_since_ = 0;
   bool enter = false;
-  const auto degrade = [&] {
+  const auto degrade = [&](const char* cause) {
     if (!degraded_) {
       degraded_ = true;
       enter = true;
       release_before_fault_ = request.release_source_ns;
       healthy_since_ = 0;  // Pre-fault health cannot satisfy post-fault recovery.
+      degraded_cause_ = cause;
+      degraded_since_cycle_ = request.cycle;
     }
   };
   const bool matching_failed = have_result_ && cached_.epoch[arm_] == request.epoch &&
                                (!cached_.result.solver_succeeded || cached_.result.fallback_active);
   if (request.motion_active && !healthy &&
       (matching_failed || model_reused_ || now - pending_since_ > limits_.maximum_result_age_ns))
-    degrade();
+    degrade(model_reused_      ? "model_grace"
+            : !out.peer_usable ? "peer_unavailable"
+                               : out.worker_rejection);
   // A fresh release after the fault plus a new engagement is mandatory. A
   // healthy worker alone never re-enables an old held trigger or homing request.
   if (degraded_ && healthy && request.motion_active &&
@@ -210,7 +226,15 @@ AsyncSafetyOutput AsyncSafetyController::update(const ModelRequest& request,
   out.reply.result.arm_intervention_norm[arm_] = out.reply.result.intervention_norm;
 
   if (request.motion_active && out.reply.result.fallback_active)
-    degrade();
+    degrade("local_guard_repair_exhausted");
+  if (enter) {
+    degraded_guard_status_ = out.reply.result.solver_status;
+    degraded_guard_violation_ = out.reply.result.maximum_constraint_violation;
+  }
+  out.degraded_cause = degraded_ ? degraded_cause_ : "none";
+  out.degraded_since_cycle = degraded_since_cycle_;
+  out.degraded_guard_status = degraded_guard_status_;
+  out.degraded_guard_violation = degraded_guard_violation_;
   out.entered_degraded = enter;
   out.degraded = degraded_;
   out.holding = holding_;

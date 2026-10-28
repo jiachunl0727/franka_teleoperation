@@ -94,6 +94,53 @@ TEST(CBF, PandaDefaultsAndLimitsValidate) {
   ids[0].world_from_base.linear()(0, 0) = 2;
   EXPECT_FALSE(filter.configure(parameters(), ids, &error));
 }
+TEST(CBF, LightWristAndCoupledDynamicsDoNotLoseFeasibleTrackingToIterationLimits) {
+  for (bool coupled : {false, true}) {
+    cbf::SafetyParameters p;
+    p.active_arms = {true, false};
+    p.singularity_enabled = true;
+    cbf::CbfSafetyFilter filter;
+    configure(filter, p);
+    cbf::DualArmState s;
+    s.arm[0] = safety_filter::panda_model_fixture(
+        Eigen::Map<const cbf::Vector7d>(safety_filter::kHome.data()));
+    s.arm[0].mass.diagonal() << 2.5, 2, 1.2, .7, .03, .02, .006;
+    if (coupled) {
+      cbf::Matrix7d l = cbf::Matrix7d::Identity();
+      l(3, 1) = .15;
+      l(5, 3) = .2;
+      l(6, 2) = .1;
+      s.arm[0].mass = l * s.arm[0].mass * l.transpose();
+    }
+    double maximum_command = 0;
+    for (int cycle = 0; cycle < 500; ++cycle) {
+      cbf::Vector14d nominal = cbf::Vector14d::Zero();
+      for (int joint = 0; joint < 7; ++joint)
+        nominal[joint] = 2 * std::sin(.1 * cycle + joint);
+      allocations = 0;
+      track_allocations = true;
+      const auto result = filter.filter(nominal, s, .005, {true, false});
+      track_allocations = false;
+      ASSERT_TRUE(result.solver_succeeded)
+          << "coupled=" << coupled << " cycle=" << cycle << " status=" << result.solver_status;
+      EXPECT_EQ(allocations, 0u);
+      EXPECT_FALSE(result.fallback_active);
+      EXPECT_LE(result.solver_iterations, p.solver_max_iterations);
+      EXPECT_LE(result.maximum_constraint_violation, p.solver_feasibility_tolerance);
+      const cbf::Vector7d acceleration = s.arm[0].mass.ldlt().solve(result.safe_torque.head<7>());
+      EXPECT_LE(acceleration.cwiseAbs().maxCoeff(), 7 + p.solver_feasibility_tolerance);
+      EXPECT_LE((result.safe_torque.head<7>() - s.arm[0].previous_torque).cwiseAbs().maxCoeff(),
+                p.maximum_torque_rate * .001 + 1e-10);
+      EXPECT_TRUE((result.safe_torque.head<7>().cwiseAbs().array() <=
+                   p.maximum_joint_torque.array() + 1e-10)
+                      .all());
+      EXPECT_TRUE(result.safe_torque.tail<7>().isZero());
+      maximum_command = std::max(maximum_command, result.safe_torque.norm());
+      s.arm[0].previous_torque = result.safe_torque.head<7>();
+    }
+    EXPECT_GT(maximum_command, .1);  // The fix must not just replace tracking with zero torque.
+  }
+}
 TEST(CBF, VerifiedTrackingRepairAllocatesNothingAndRetainsActuatorAndAccelerationBounds) {
   auto p = parameters();
   p.active_arms = {true, false};
@@ -765,6 +812,93 @@ TEST(CollisionGeometry, FarInterArmPairsArePrunedAndRecheckedOnApproach) {
   EXPECT_DOUBLE_EQ(reentry.minimum_inter_arm_clearance, reference.minimum_inter_arm_clearance);
   EXPECT_TRUE(reentry.safe_torque.isApprox(reference.safe_torque, 1e-12));
   EXPECT_DOUBLE_EQ(reentry.maximum_constraint_violation, reference.maximum_constraint_violation);
+}
+
+TEST(LocalGuard, CoupledDynamicsLimitTrackingWithoutLatchingAFeasibleCommand) {
+  cbf::SafetyParameters p;
+  p.active_arms = {true, false};
+  p.singularity_enabled = true;
+  cbf::CbfSafetyFilter filter;
+  std::string error;
+  ASSERT_TRUE(filter.configure(p, identities(), &error, false)) << error;
+  auto s = state();
+  s.arm[0] = safety_filter::panda_model_fixture(s.arm[0].q);
+  int limited = 0;
+  for (int trial = 0; trial < 500; ++trial) {
+    filter.reset();
+    auto& arm = s.arm[0];
+    arm.mass.setZero();
+    arm.mass.diagonal() << 2.5, 2, 1.2, .7, .03, .02, .006;
+    cbf::Matrix7d coupling = cbf::Matrix7d::Identity();
+    for (int i = 1; i < 7; ++i)
+      for (int j = 0; j < i; ++j)
+        coupling(i, j) = .3 * std::sin(trial * .1 + i * 2 + j * 3);
+    arm.mass = coupling * arm.mass * coupling.transpose();
+    cbf::Vector14d nominal = cbf::Vector14d::Zero();
+    for (int j = 0; j < 7; ++j)
+      nominal[j] = .35 * std::sin(trial * .1 + j);
+    allocations = 0;
+    track_allocations = true;
+    const auto out = filter.guard(nominal, cbf::Vector14d::Zero(), s, .001, 0, 0, .005);
+    track_allocations = false;
+    EXPECT_EQ(allocations, 0u);
+    ASSERT_FALSE(out.fallback_active) << "trial=" << trial << " status=" << out.solver_status;
+    EXPECT_FALSE(out.fatal_solver_fault);
+    EXPECT_TRUE(out.solver_succeeded);
+    EXPECT_LE(out.maximum_constraint_violation, p.solver_feasibility_tolerance);
+    EXPECT_GT(out.safe_torque.head<7>().norm(), .001);
+    EXPECT_LE(out.safe_torque.cwiseAbs().maxCoeff(), p.maximum_torque_rate * .001 + 1e-12);
+    const cbf::Vector7d acceleration = arm.mass.llt().solve(out.safe_torque.head<7>());
+    EXPECT_LE((acceleration.cwiseAbs() - p.maximum_joint_acceleration).maxCoeff(),
+              p.solver_feasibility_tolerance + 1e-9);
+    limited += std::string(out.solver_status) == "local_candidate_limited";
+  }
+  EXPECT_GT(limited, 100);  // Exercise the previously false-fallback path.
+}
+
+TEST(LocalGuard, FullyFeasibleLaterRepairDoesNotReportFallback) {
+  cbf::SafetyParameters p;
+  p.active_arms = {true, false};
+  p.singularity_enabled = true;
+  cbf::CbfSafetyFilter filter;
+  std::string error;
+  ASSERT_TRUE(filter.configure(p, identities(), &error, false)) << error;
+  for (int trial : {26, 27, 89}) {
+    SCOPED_TRACE(trial);
+    filter.reset();
+    auto s = state();
+    auto& arm = s.arm[0];
+    arm = safety_filter::panda_model_fixture(arm.q);
+    cbf::Matrix7d diagonal = cbf::Matrix7d::Zero();
+    diagonal.diagonal() << 2.5, 2, 1.2, .7, .03, .02, .006;
+    cbf::Matrix7d coupling = cbf::Matrix7d::Identity();
+    for (int i = 1; i < 7; ++i)
+      for (int j = 0; j < i; ++j)
+        coupling(i, j) = .3 * std::sin(.1 * trial + 2 * i + 3 * j);
+    arm.mass = coupling * diagonal * coupling.transpose();
+    cbf::Vector7d previous_acceleration;
+    cbf::Vector14d nominal = cbf::Vector14d::Zero(), braking = nominal;
+    for (int j = 0; j < 7; ++j) {
+      previous_acceleration[j] = 6 * std::sin(.1 * trial + j);
+      arm.dq[j] = .003 * std::sin(.1 * trial + 2 * j);
+      nominal[j] = 2 * std::sin(.1 * trial + j);
+      braking[j] = -22 * arm.dq[j];
+    }
+    // The measured torque's acceleration lies just outside the new model's
+    // limit. Neither the anchor nor the initial bounded brake is a certificate.
+    previous_acceleration[trial % 7] = 7.02;
+    arm.previous_torque = arm.mass * previous_acceleration;
+    allocations = 0;
+    track_allocations = true;
+    const auto out = filter.guard(nominal, braking, s, .001, 0, 0, .005);
+    track_allocations = false;
+    EXPECT_EQ(allocations, 0u);
+    ASSERT_TRUE(out.solver_succeeded);
+    EXPECT_FALSE(out.fallback_active);  // Previously true despite a verified torque.
+    EXPECT_FALSE(out.fatal_solver_fault);
+    EXPECT_LE(out.maximum_constraint_violation, p.solver_feasibility_tolerance);
+    EXPECT_LE((out.safe_torque.head<7>() - arm.previous_torque).cwiseAbs().maxCoeff(), .35000001);
+  }
 }
 
 TEST(CollisionGeometry, SelfAndObstaclePruningRetainNearPairsWithoutAllocating) {
