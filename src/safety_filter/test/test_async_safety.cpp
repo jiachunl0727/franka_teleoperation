@@ -85,6 +85,137 @@ TEST(AsyncSafety, PendingModeDoesNotDisarmEveryEngagementAndNeverUsesOldEpoch) {
   EXPECT_FALSE(out.worker_usable);
   EXPECT_NEAR(out.reply.result.safe_torque[0], 0, 1e-9);
 }
+TEST(AsyncSafety, HealthyReleasedDwellCountsTowardFreshReengagement) {
+  Fixture f(false);
+  f.limits.recovery_dwell_ns = 100000000;
+  f.configure();
+  auto r = request();
+  r.motion_active = true;
+  ASSERT_TRUE(f.local.prepare_model(r.state, r.stamp_ns));
+  ++r.cycle;
+  r.stamp_ns += 1000000;
+  r.state.mass(0, 0) = std::numeric_limits<double>::quiet_NaN();
+  ASSERT_TRUE(f.local.prepare_model(r.state, r.stamp_ns));
+  ASSERT_TRUE(f.local.model_reused());
+  auto out = f.local.update(r, nullptr, nullptr, r.stamp_ns);
+  ASSERT_TRUE(out.degraded);
+  ASSERT_FALSE(out.reply.result.fatal_solver_fault);
+  r.state.dq.setZero();
+  r.nominal.setZero();
+  r.motion_active = false;
+  r.epoch = 2;
+  for (int cycle = 3; cycle <= 150; ++cycle) {
+    r.cycle = cycle;
+    r.stamp_ns = start + cycle * 1000000;
+    r.release_source_ns = r.stamp_ns;
+    ASSERT_TRUE(f.local.prepare_model(r.state, r.stamp_ns));
+    out = f.local.update(r, nullptr, nullptr, r.stamp_ns);
+    ASSERT_TRUE(out.worker_usable);
+    ASSERT_FALSE(out.reply.result.fatal_solver_fault);
+    EXPECT_TRUE(out.degraded);  // Release alone never resumes movement.
+  }
+  ++r.cycle;
+  r.stamp_ns += 1000000;
+  r.epoch = 3;
+  r.motion_active = true;
+  r.nominal[0] = .1;
+  out = f.local.update(r, nullptr, nullptr, r.stamp_ns);
+  EXPECT_FALSE(out.degraded);
+  EXPECT_NEAR(out.reply.result.safe_torque[0], .1, 1e-9);
+}
+TEST(AsyncSafety, CbfRecoveryDwellSurvivesModeHandoffWithoutReusingItsTorque) {
+  Fixture f;
+  f.configure();
+  auto r = request();
+  r.motion_active = true;
+  auto bad = success(r);
+  bad.result.solver_succeeded = false;
+  auto out = f.local.update(r, nullptr, &bad, r.stamp_ns);
+  ASSERT_TRUE(out.degraded);
+  r.motion_active = false;
+  r.epoch = 2;
+  for (int cycle = 2; cycle <= 150; ++cycle) {
+    r.cycle = cycle;
+    r.stamp_ns = start + cycle * 1000000;
+    r.release_source_ns = r.stamp_ns;
+    auto good = success(r);
+    out = f.local.update(r, nullptr, &good, r.stamp_ns);
+  }
+  ++r.cycle;
+  r.stamp_ns += 1000000;
+  r.epoch = 3;
+  r.motion_active = true;
+  r.nominal[0] = .2;
+  out = f.local.update(r, nullptr, nullptr, r.stamp_ns);
+  EXPECT_FALSE(out.worker_usable);
+  EXPECT_TRUE(out.degraded);  // No torque reuse across the epoch.
+  r.cycle += 5;
+  r.stamp_ns += 5000000;
+  auto good = success(r);
+  out = f.local.update(r, nullptr, &good, r.stamp_ns);
+  EXPECT_TRUE(out.worker_usable);
+  EXPECT_FALSE(out.degraded);  // No second 100 ms dwell after the mode handoff.
+  EXPECT_NEAR(out.reply.result.safe_torque[0], .2, 1e-9);
+}
+TEST(AsyncSafety, HealthBeforeTheFaultDoesNotCountAsRecoveryDwell) {
+  Fixture f(false);
+  f.limits.recovery_dwell_ns = 100000000;
+  f.configure();
+  auto r = request();
+  for (int cycle = 1; cycle <= 150; ++cycle) {
+    r.cycle = cycle;
+    r.stamp_ns = start + cycle * 1000000;
+    ASSERT_TRUE(f.local.prepare_model(r.state, r.stamp_ns));
+    auto out = f.local.update(r, nullptr, nullptr, r.stamp_ns);
+    ASSERT_FALSE(out.degraded);
+  }
+  ++r.cycle;
+  r.stamp_ns += 1000000;
+  r.motion_active = true;
+  r.state.mass(0, 0) = std::numeric_limits<double>::quiet_NaN();
+  ASSERT_TRUE(f.local.prepare_model(r.state, r.stamp_ns));
+  auto out = f.local.update(r, nullptr, nullptr, r.stamp_ns);
+  ASSERT_TRUE(out.degraded);
+  ++r.cycle;
+  r.stamp_ns += 1000000;
+  r.release_source_ns = r.stamp_ns;
+  r.motion_active = false;
+  r.epoch = 2;
+  r.nominal.setZero();
+  r.state.dq.setZero();
+  ASSERT_TRUE(f.local.prepare_model(r.state, r.stamp_ns));
+  f.local.update(r, nullptr, nullptr, r.stamp_ns);
+  ++r.cycle;
+  r.stamp_ns += 1000000;
+  r.epoch = 3;
+  r.motion_active = true;
+  out = f.local.update(r, nullptr, nullptr, r.stamp_ns);
+  EXPECT_TRUE(out.degraded);  // Only 1 ms of new health, despite the old 150 ms.
+}
+TEST(AsyncSafety, FeasibleCurrentCorrectionDoesNotLatchBrakingDuringChangingTargets) {
+  Fixture f;
+  f.configure();
+  auto r = request();
+  r.motion_active = true;
+  r.state.previous_torque[0] = 6.8;
+  r.nominal[0] = 6.8;
+  auto worker = success(r);
+  auto out = f.local.update(r, nullptr, &worker, r.stamp_ns);
+  ASSERT_FALSE(out.degraded);
+  ++r.cycle;
+  r.stamp_ns += 1000000;
+  // The desired torque rises before the next worker solve. Its rate-bounded
+  // candidate is 7.15 Nm, slightly above the 7 rad/s^2 acceleration row for
+  // this identity-mass fixture. A feasible current correction exists at 7 Nm.
+  r.nominal[0] = 20;
+  out = f.local.update(r, nullptr, nullptr, r.stamp_ns);
+  EXPECT_FALSE(out.degraded);
+  EXPECT_FALSE(out.reply.result.fallback_active);
+  EXPECT_TRUE(out.reply.result.solver_succeeded);
+  EXPECT_LE(out.reply.result.maximum_constraint_violation, 1e-3);
+  EXPECT_GE(out.reply.result.safe_torque[0], 6.45);
+  EXPECT_LE(out.reply.result.safe_torque[0], 7.001);
+}
 TEST(AsyncSafety, FailedWorkerBrakesAndHoldsUntilReleaseReengagementAndHealthyDwell) {
   Fixture f;
   f.limits.recovery_dwell_ns = 2000000;
@@ -165,7 +296,9 @@ TEST(AsyncSafety, WorldTableRemainsMandatoryWithCbfDisabledAndProtectsLinksNotJu
   EXPECT_GT(out.reply.result.table_constraints, 0);
   EXPECT_GT(out.reply.result.safe_torque[0], 0);
   EXPECT_FALSE(out.reply.result.fatal_solver_fault);
-  EXPECT_TRUE(out.degraded);
+  EXPECT_FALSE(out.degraded);  // A verified correction is ordinary intervention.
+  EXPECT_TRUE(out.reply.result.solver_succeeded);
+  EXPECT_LE(out.reply.result.maximum_constraint_violation, 1e-3);
   auto ids = identities();
   ids[0].world_from_base.translation().z() = 1;
   Fixture high(false);
@@ -200,6 +333,35 @@ TEST(AsyncSafety, MandatoryInfeasibilityIsAnExceptionalFault) {
   auto r = request();
   auto out = f.local.update(r, nullptr, nullptr, r.stamp_ns);
   EXPECT_TRUE(out.reply.result.fatal_solver_fault);
+}
+TEST(AsyncSafety, HorizontalCapsuleEndpointCrossingDoesNotCreateFalseTableAcceleration) {
+  Fixture f(false);
+  f.configure();
+  auto r = request();
+  r.state.mass.setIdentity();
+  r.state.coriolis.setZero();
+  r.state.dq.setZero();
+  r.state.dq[0] = 1;
+  for (int frame = 0; frame < 9; ++frame) {
+    r.state.frame_pose[frame].setIdentity();
+    r.state.frame_pose[frame].translation().z() = .6;
+    r.state.frame_jacobian[frame].setZero();
+  }
+  r.state.frame_pose[7].translation().z() = .3;
+  r.state.frame_jacobian[7](3, 0) = 1;
+  // The Hand's horizontal capsules change which endpoint is lowest. Each
+  // endpoint has smooth motion; differencing their two different Jacobians
+  // as if they were one point produces an artificial 1/dt acceleration.
+  for (double angle : {-.0005, .0005}) {
+    r.state.frame_pose[7].linear() =
+        Eigen::AngleAxisd(angle, Eigen::Vector3d::UnitX()).toRotationMatrix();
+    auto out = f.local.update(r, nullptr, nullptr, r.stamp_ns);
+    EXPECT_GT(out.reply.result.minimum_table_clearance, .15);
+    EXPECT_FALSE(out.reply.result.fatal_solver_fault) << out.reply.result.solver_status;
+    r.stamp_ns += 1000000;
+    ++r.cycle;
+    r.state.q[0] += .001;
+  }
 }
 TEST(AsyncSafety, IsolatedModelGlitchHasBoundedGraceWithoutRefreshingTimestamp) {
   Fixture f;

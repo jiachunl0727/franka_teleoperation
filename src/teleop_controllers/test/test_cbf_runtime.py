@@ -1,6 +1,7 @@
 """Actual single/dual owners call the CBF coordinator; no FCI operation."""
 
 import os
+import re
 from pathlib import Path
 import signal
 import subprocess
@@ -46,6 +47,43 @@ class CbfRuntimeTest(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("actuator scales moved to cbf.", result.stdout + result.stderr)
+
+    def test_mandatory_table_fault_preserves_the_callback_model(self):
+        result = subprocess.run(
+            [
+                "ros2",
+                "run",
+                "teleop_controllers",
+                "cartesian_impedance_controller",
+                "--ros-args",
+                "-p",
+                "backend:=mock",
+                "-p",
+                "cbf.enabled:=false",
+                "-p",
+                "cbf.table_height:=2.0",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn("Local guard fault arm 0 cycle", output)
+        self.assertIn("mandatory_residual=", output)
+        self.assertIn("no_valid_mandatory_table_command", output)
+        match = re.search(
+            r"CBF failing model saved to (\S+) \(column-major matrices\)", output
+        )
+        self.assertIsNotNone(match, output)
+        path = Path(match.group(1))
+        try:
+            header = path.read_text().splitlines()[0].split()
+            self.assertEqual(header[:2], ["CBF_MODEL_V1", "0"])
+            self.assertGreater(int(header[2]), 0)
+            self.assertAlmostEqual(float(header[3]), 0.001)
+        finally:
+            path.unlink(missing_ok=True)
 
     def test_custom_actuator_scales_enforce_magnitude_and_rate_with_cbf_on_and_off(
         self,
@@ -299,7 +337,10 @@ class CbfRuntimeTest(unittest.TestCase):
                     self.assertTrue(matches)
                     for right in matches:
                         left = paired[tuple(right.source_time_pc_monotonic_ns)]
-                        self.assertEqual(list(left.worker_source_cycle), list(right.worker_source_cycle))
+                        self.assertEqual(
+                            list(left.worker_source_cycle),
+                            list(right.worker_source_cycle),
+                        )
                 finally:
                     if proc.poll() is None:
                         os.killpg(proc.pid, signal.SIGINT)
@@ -417,7 +458,8 @@ class CbfRuntimeTest(unittest.TestCase):
                     )
                     self.assertTrue(
                         all(
-                            s.mandatory_table_guard_enabled and s.execution == "asynchronous"
+                            s.mandatory_table_guard_enabled
+                            and s.execution == "asynchronous"
                             for s in safety
                         )
                     )

@@ -22,6 +22,7 @@
 #include <stdexcept>
 #include <thread>
 
+#include "hardware_startup.hpp"
 #include "safety_filter/async_safety.hpp"
 #include "safety_filter/handoff.hpp"
 #include "safety_filter/legacy_pose.hpp"
@@ -51,6 +52,7 @@ struct Telemetry {
   sf::AsyncSafetyOutput local_safety;
   ft::Vector7 gravity{ft::Vector7::Zero()};
   bool finish_requested{false};
+  bool motion_requested{false};
   uint64_t stamp_ns{0}, cycle{0};
 };
 struct PoseFeedback {
@@ -62,6 +64,9 @@ struct PoseFeedback {
 struct OwnerTiming {
   uint64_t cycle{0}, source_ns{0}, submitted_ns{0}, finished_ns{0};
   bool accepted{false};
+  bool local_fault{false}, have_fault_peer{false};
+  sf::ModelRequest fault_request, fault_peer;
+  sf::SafetyReply fault_reply;
 };
 void write_pose(geometry_msgs::msg::Pose& p, const Eigen::Vector3d& v,
                 const Eigen::Quaterniond& q) {
@@ -224,6 +229,7 @@ int run_arm(const std::shared_ptr<rclcpp::Node>& node, int arm, sf::SafetyCoordi
     const auto startup_watch_ns = monotonic_ns();
     std::array<bool, 3> last_command_flags{};
     bool raw_seen = false;
+    uint64_t last_raw_log_ns = 0, last_command_log_ns = 0;
     std::array<bool, 9> last_raw_flags{};
     auto raw_input = node->create_subscription<quest_teleop_interfaces::msg::QuestControllerState>(
         raw_topic, rclcpp::QoS(20),
@@ -239,16 +245,19 @@ int run_arm(const std::shared_ptr<rclcpp::Node>& node, int arm, sf::SafetyCoordi
                                           msg->clock_sync_valid && msg->source_time_valid,
                                           msg->reference_space == "LOCAL",
                                           msg->trigger_value <= trigger_release};
-          if (!raw_seen || flags != last_raw_flags) {
+          const auto diagnostic_ns = monotonic_ns();
+          if ((!raw_seen || flags != last_raw_flags) &&
+              (!raw_seen || diagnostic_ns - last_raw_log_ns >= 500000000)) {
             raw_seen = true;
             last_raw_flags = flags;
-            RCLCPP_INFO_THROTTLE(
-                node->get_logger(), *node->get_clock(), 500,
-                "Quest input: controller=%s connected=%d focused=%d pose_active=%d "
-                "position_ok=%d orientation_ok=%d trigger_active=%d clock_valid=%d "
-                "local_space=%d trigger=%.3f uncertainty_ms=%.3f",
-                controller_id.c_str(), flags[0], flags[1], flags[2], flags[3], flags[4], flags[5],
-                flags[6], flags[7], msg->trigger_value, msg->clock_uncertainty_ns / 1e6);
+            last_raw_log_ns = diagnostic_ns;
+            RCLCPP_INFO(node->get_logger(),
+                        "Quest input: controller=%s connected=%d focused=%d pose_active=%d "
+                        "position_ok=%d orientation_ok=%d trigger_active=%d clock_valid=%d "
+                        "local_space=%d trigger=%.3f uncertainty_ms=%.3f",
+                        controller_id.c_str(), flags[0], flags[1], flags[2], flags[3], flags[4],
+                        flags[5], flags[6], flags[7], msg->trigger_value,
+                        msg->clock_uncertainty_ns / 1e6);
           }
           if (!homing_enabled)
             return;
@@ -311,17 +320,19 @@ int run_arm(const std::shared_ptr<rclcpp::Node>& node, int arm, sf::SafetyCoordi
           if (!commands.push(c))
             overflows.fetch_add(1, std::memory_order_release);
           const std::array<bool, 3> flags{c.valid, c.released, c.enabled};
-          if (!command_seen || flags != last_command_flags) {
+          if ((!command_seen || flags != last_command_flags) &&
+              (!command_seen || c.receipt_ns - last_command_log_ns >= 500000000)) {
             command_seen = true;
             last_command_flags = flags;
-            RCLCPP_INFO_THROTTLE(node->get_logger(), *node->get_clock(), 500,
-                                 "Mapped input: valid=%d trigger_released=%d motion_requested=%d "
-                                 "frame_match=%d source_age_ms=%.3f uncertainty_ms=%.3f",
-                                 c.valid, c.released, c.enabled, msg->header.frame_id == frame,
-                                 c.source_ns && c.receipt_ns >= c.source_ns
-                                     ? (c.receipt_ns - c.source_ns) / 1e6
-                                     : -1.,
-                                 c.uncertainty_ns / 1e6);
+            last_command_log_ns = c.receipt_ns;
+            RCLCPP_INFO(node->get_logger(),
+                        "Mapped input: valid=%d trigger_released=%d motion_requested=%d "
+                        "frame_match=%d source_age_ms=%.3f uncertainty_ms=%.3f",
+                        c.valid, c.released, c.enabled, msg->header.frame_id == frame,
+                        c.source_ns && c.receipt_ns >= c.source_ns
+                            ? (c.receipt_ns - c.source_ns) / 1e6
+                            : -1.,
+                        c.uncertainty_ns / 1e6);
           }
         });
     auto measured = node->create_publisher<geometry_msgs::msg::PoseStamped>(
@@ -383,6 +394,8 @@ int run_arm(const std::shared_ptr<rclcpp::Node>& node, int arm, sf::SafetyCoordi
     });
     auto telemetry_group =
         node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
+    std::string last_motion_report;
+    uint64_t last_motion_log_ns = 0;
     auto timer = node->create_wall_timer(
         std::chrono::milliseconds(10),
         [&] {
@@ -393,6 +406,31 @@ int run_arm(const std::shared_ptr<rclcpp::Node>& node, int arm, sf::SafetyCoordi
           if (!snapshots.read(sample))
             return;
           const auto now = monotonic_ns();
+          const auto motion_report = std::string(ft::reason_name(sample.output.reason)) + "/" +
+                                     sample.local_safety.reason + "/" +
+                                     sample.local_safety.worker_status + "/" +
+                                     ft::home_phase_name(sample.homing.phase);
+          if (motion_report != last_motion_report &&
+              (!last_motion_log_ns || now - last_motion_log_ns >= 500000000)) {
+            last_motion_report = motion_report;
+            last_motion_log_ns = now;
+            RCLCPP_INFO(node->get_logger(),
+                        "Motion state: requested=%d enabled=%d controller=%s safety=%s "
+                        "local_guard=%s worker=%s worker_age_ms=%.3f worker_usable=%d "
+                        "manipulability=%.6g minimum_manipulability=%.6g "
+                        "degraded=%d homing=%s position_error_m=%.6g "
+                        "joint_speed_rad_s=%.6g nominal_norm_Nm=%.6g command_norm_Nm=%.6g",
+                        sample.motion_requested, sample.output.motion_enabled,
+                        ft::reason_name(sample.output.reason), sample.local_safety.reason,
+                        sample.safety.result.solver_status, sample.local_safety.worker_status,
+                        sample.local_safety.worker_age_ns / 1e6, sample.local_safety.worker_usable,
+                        sample.safety.result.manipulability[arm],
+                        safety_parameters.singularity_minimum_manipulability,
+                        sample.local_safety.degraded, ft::home_phase_name(sample.homing.phase),
+                        (sample.output.target_position - sample.state.position).norm(),
+                        sample.state.dq.cwiseAbs().maxCoeff(), sample.output.nominal.norm(),
+                        sample.output.torque.norm());
+          }
           geometry_msgs::msg::PoseStamped pose;
           pose.header.stamp = node->now() - rclcpp::Duration::from_nanoseconds(
                                                 now >= sample.stamp_ns ? now - sample.stamp_ns : 0);
@@ -621,6 +659,7 @@ int run_arm(const std::shared_ptr<rclcpp::Node>& node, int arm, sf::SafetyCoordi
       const auto managed = manager.update(telemetry.state, input_check_ns, period);
       telemetry.homing = managed.homing;
       telemetry.output = managed.control;
+      telemetry.motion_requested = managed.control.motion_enabled;
       if (telemetry.output.reason == ft::Reason::invalid_state || telemetry.homing.stop_failed) {
         owner_fault = true;
         fault_period = period;
@@ -644,6 +683,7 @@ int run_arm(const std::shared_ptr<rclcpp::Node>& node, int arm, sf::SafetyCoordi
       // inter-arm priority; joint position holding remains parked. All sources
       // still pass through the same complete safety filter.
       request.motion_active = telemetry.output.motion_enabled || telemetry.homing.active;
+      request.homing_active = telemetry.homing.active;
       const auto& context = manager.requested_command();
       const int kind = static_cast<int>(telemetry.output.reason);
       if (kind != previous_kind || context.session != previous_session ||
@@ -664,7 +704,11 @@ int run_arm(const std::shared_ptr<rclcpp::Node>& node, int arm, sf::SafetyCoordi
       telemetry.finish_requested = !running.load(std::memory_order_acquire) &&
                                    shutdown_seconds >= .5 && !telemetry.homing.active;
       request.finish_requested = telemetry.finish_requested;
-      timing = {telemetry.cycle, telemetry.stamp_ns, monotonic_ns(), 0, false};
+      timing.cycle = telemetry.cycle;
+      timing.source_ns = telemetry.stamp_ns;
+      timing.submitted_ns = monotonic_ns();
+      timing.finished_ns = 0;
+      timing.accepted = false;
       coordinator.submit(arm, request);
       sf::SafetyReply reply;
       bool accepted = false;
@@ -681,6 +725,16 @@ int run_arm(const std::shared_ptr<rclcpp::Node>& node, int arm, sf::SafetyCoordi
                                 received ? &incoming : nullptr, monotonic_ns());
         reply = telemetry.local_safety.reply;
         reply.finish = coordinator.may_finish();
+        if (reply.result.fatal_input_fault || reply.result.fatal_solver_fault) {
+          // Preserve the actual callback-side failure. The asynchronous worker
+          // diagnostic slot may contain an older, unrelated request/result.
+          timing.local_fault = true;
+          timing.fault_request = request;
+          timing.fault_reply = reply;
+          timing.have_fault_peer = have_peer_request;
+          if (have_peer_request)
+            timing.fault_peer = peer_request;
+        }
         if (reply.result.fatal_input_fault)
           coordinator.stop(sf::SafetyStop::invalid_model);
         if (reply.result.fatal_solver_fault)
@@ -797,6 +851,7 @@ int run_arm(const std::shared_ptr<rclcpp::Node>& node, int arm, sf::SafetyCoordi
                 << " current_errors=" << startup_state.current_errors
                 << " last_motion_errors=" << startup_state.last_motion_errors;
         RCLCPP_INFO(node->get_logger(), "%s", startup.str().c_str());
+        ft::require_idle_control_start(startup_state);
         control_requested.store(true, std::memory_order_release);
         robot.control(
             [&](const franka::RobotState& state, franka::Duration period) -> franka::Torques {
@@ -920,6 +975,33 @@ void log_model_diagnostics(const rclcpp::Logger& logger, int arm, const sf::Mode
                    "Empty actuator interval joint %d: tau_J_d=%.9g magnitude_limit=%.9g slew=%.9g",
                    joint + 1, s.previous_torque[joint], magnitude, slew);
   }
+}
+
+void save_model_diagnostic(const rclcpp::Logger& logger, int arm, const sf::ModelRequest& request,
+                           const std::string& path) {
+  std::ofstream file(path);
+  file.precision(17);
+  file << "CBF_MODEL_V1 " << arm << ' ' << request.cycle << ' ' << request.period << '\n';
+  const auto write = [&](const auto& values) {
+    for (Eigen::Index k = 0; k < values.size(); ++k)
+      file << values.data()[k] << ' ';
+    file << '\n';
+  };
+  write(request.state.q);
+  write(request.state.dq);
+  write(request.state.coriolis);
+  write(request.state.previous_torque);
+  write(request.nominal);
+  write(request.state.mass);
+  for (int frame = 0; frame < sf::cbf::kModelFrames; ++frame) {
+    write(request.state.frame_pose[frame].matrix());
+    write(request.state.frame_jacobian[frame]);
+  }
+  file.close();
+  if (file)
+    RCLCPP_ERROR(logger, "CBF failing model saved to %s (column-major matrices)", path.c_str());
+  else
+    RCLCPP_ERROR(logger, "Could not save CBF failing model to %s", path.c_str());
 }
 
 Eigen::Affine3d world_transform(const std::vector<double>& values) {
@@ -1200,6 +1282,29 @@ int main(int argc, char* argv[]) {
       RCLCPP_ERROR(root->get_logger(), "Latched CBF stop: %s",
                    sf::safety_stop_name(coordinator.stopped()));
       result = 2;
+      for (int i = 0; i < count; ++i) {
+        const auto& t = timings[i];
+        if (!t.local_fault)
+          continue;
+        const auto& failure = t.fault_reply.result;
+        RCLCPP_ERROR(root->get_logger(),
+                     "Local guard fault arm %d cycle %llu: status=%s table_clearance_m=%.9g "
+                     "mandatory_residual=%.9g worst_mandatory_row=%d table_height_m=%.9g "
+                     "table_clearance_setting_m=%.9g reserve_m=%.9g",
+                     i, static_cast<unsigned long long>(t.fault_request.cycle),
+                     failure.solver_status, failure.minimum_table_clearance,
+                     failure.maximum_mandatory_constraint_violation, failure.worst_mandatory_row,
+                     safety.table_height, safety.table_minimum_clearance, limits.clearance_reserve);
+        std::ostringstream transform;
+        transform << ids[i].world_from_base.matrix();
+        RCLCPP_ERROR(root->get_logger(), "Local guard world_from_base arm %d:\n%s", i,
+                     transform.str().c_str());
+        const auto path = "/tmp/franka-cbf-guard-arm-" + std::to_string(i) + "-" +
+                          std::to_string(t.fault_request.stamp_ns) + ".txt";
+        save_model_diagnostic(root->get_logger(), i, t.fault_request, path);
+        if (t.have_fault_peer)
+          save_model_diagnostic(root->get_logger(), 1 - i, t.fault_peer, path + ".peer");
+      }
       if (coordinator.stopped() == sf::SafetyStop::result_deadline ||
           coordinator.stopped() == sf::SafetyStop::filter_deadline) {
         for (int i = 0; i < count; ++i) {
@@ -1231,32 +1336,7 @@ int main(int argc, char* argv[]) {
           const auto& request = coordinator.diagnostic_request(i);
           if (request.cycle == t.cycle && request.stamp_ns == t.source_ns && t.cycle) {
             const auto path = "/tmp/franka-cbf-model-arm-" + std::to_string(i) + ".txt";
-            std::ofstream model_file(path);
-            model_file.precision(17);
-            model_file << "CBF_MODEL_V1 " << i << ' ' << request.cycle << ' ' << request.period
-                       << '\n';
-            const auto write = [&](const auto& values) {
-              for (Eigen::Index k = 0; k < values.size(); ++k)
-                model_file << values.data()[k] << ' ';
-              model_file << '\n';
-            };
-            write(request.state.q);
-            write(request.state.dq);
-            write(request.state.coriolis);
-            write(request.state.previous_torque);
-            write(request.nominal);
-            write(request.state.mass);
-            for (int frame = 0; frame < sf::cbf::kModelFrames; ++frame) {
-              write(request.state.frame_pose[frame].matrix());
-              write(request.state.frame_jacobian[frame]);
-            }
-            model_file.close();
-            if (model_file)
-              RCLCPP_ERROR(root->get_logger(),
-                           "CBF failing model saved to %s (column-major matrices)", path.c_str());
-            else
-              RCLCPP_ERROR(root->get_logger(), "Could not save CBF failing model to %s",
-                           path.c_str());
+            save_model_diagnostic(root->get_logger(), i, request, path);
           }
         }
       }

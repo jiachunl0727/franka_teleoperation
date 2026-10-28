@@ -7,7 +7,13 @@ uint32 payload_length (network byte order)
 UTF-8 JSON payload (exactly payload_length bytes)
 ```
 
-Maximum payload is 4096 bytes. Reject zero/oversized lengths, malformed JSON, unsupported versions/types, invalid arrays/scalars, and out-of-order input. A TCP connection carries exactly one OpenXR session; reconnect starts a new session ID and sequence space. Never replay buffered commands after reconnect.
+Maximum payload is 4096 bytes. Reject zero/oversized lengths, malformed JSON, unsupported versions/types, invalid arrays/scalars, and out-of-order input. A TCP connection carries one OpenXR session. Reconnecting the same running app may retain its session ID and increasing sequence numbers; input release gates still reset. Never replay buffered commands after reconnect.
+
+The native transport retries connection every 250 ms independently of OpenXR
+sample production. It can establish clock synchronization before fresh controller
+frames are available; a clock-only connection cannot authorize arm or Hand
+movement. Reconnection discards samples queued during synchronization and requests
+local disarming. USB/ADB reverse routing must still exist.
 
 ## Clock synchronization
 

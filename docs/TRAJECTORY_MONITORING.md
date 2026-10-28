@@ -13,6 +13,11 @@ the requested cleanup; record a new episode before following the export steps.
 
 ## Data and clocks
 
+Default recordings also include each arm’s `cbf_status` and `gripper_events` for
+worker rejection, manipulability, cancellation and force-hold diagnosis. These
+remain in the bag; the MATLAB tracking CSV exporter selects `TrackingSample`
+topics only.
+
 Each arm publishes two `quest_teleop_interfaces/TrackingSample` topics:
 
 | Topic | Use |
@@ -160,6 +165,13 @@ Keep `recording.include_default_topics: true` in the runtime YAML, or add each
 arm's `tracking_samples` to a replacement topic profile. Menu recording starts
 only on a deliberate left Menu press; continuous mode remains available through
 YAML. Stop/finalize the episode before exporting it.
+
+Homing does not change Menu recording availability. After stopping an episode,
+wait for `Recording idle: bag finalized`, release the left Menu button and press
+again for a new episode. `/quest/recording_status` reports the phase, output path
+and input-gate reason; rejected presses and phase changes appear in the launch
+terminal. See [recording diagnostics](TELEOPERATION_RUNTIME.md#startup-and-stop-diagnostics)
+if the next episode does not start.
 
 **ROS container terminal:** replace the bag-directory placeholder with an actual
 recorded episode under `/ws/log/quest_bags`:

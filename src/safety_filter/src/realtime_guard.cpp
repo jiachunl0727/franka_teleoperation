@@ -54,7 +54,7 @@ SafetyResult CbfSafetyFilter::guard(const Vector14d& preferred, const Vector14d&
     else if (row < table_row_begin_)
       owner = row - singularity_row_begin_;
     else if (row < self_row_begin_)
-      owner = (row - table_row_begin_) / static_cast<int>(capsules_.size());
+      owner = (row - table_row_begin_) / (2 * static_cast<int>(capsules_.size()));
     else if (row < inter_arm_row_begin_)
       owner = (row - self_row_begin_) / static_cast<int>(self_pairs_.size());
     else if (row >= obstacle_row_begin_ && !obstacles_.empty())
@@ -95,8 +95,40 @@ SafetyResult CbfSafetyFilter::guard(const Vector14d& preferred, const Vector14d&
   };
   const double tolerance = parameters_.solver_feasibility_tolerance;
   const auto bounded = [&](const Vector14d& value) { return clampToActuatorBounds(value, dt); };
+  const auto project = [&](Vector14d& candidate, bool mandatory_only) {
+    for (int row : active_constraint_rows_) {
+      if (mandatory_only && !hard(row))
+        continue;
+      double dot = 0, squared = 0;
+      for (int j = own * 7; j < own * 7 + 7; ++j) {
+        const double a = a_values_[j * constraint_count_ + row];
+        dot += a * candidate[j];
+        squared += a * a;
+      }
+      if (squared < 1e-20)
+        continue;
+      const double correction = dot < lower_bound_[row]   ? lower_bound_[row] - dot
+                                : dot > upper_bound_[row] ? upper_bound_[row] - dot
+                                                          : 0;
+      if (correction != 0) {
+        for (int j = own * 7; j < own * 7 + 7; ++j)
+          candidate[j] += correction * a_values_[j * constraint_count_ + row] / squared;
+        candidate = bounded(candidate);
+      }
+    }
+  };
   Vector14d chosen = bounded(preferred);
   bool complete = violation(chosen, false, false) <= tolerance;
+  int repair_passes = 0;
+  // Changing references need not turn ordinary, feasible safety intervention
+  // into a latched stop-and-hold. First correct the current tracking candidate;
+  // accept it only after checking every active row at the current state.
+  while (!complete && repair_passes < 4) {
+    project(chosen, false);
+    ++repair_passes;
+    complete = violation(chosen, false, false) <= tolerance;
+  }
+  const bool tracking_repaired = complete && repair_passes > 0;
   if (!complete) {
     // Finite constraint-repair sweeps for a braking/holding command. No solver,
     // convergence wait, allocation, or autonomous target retreat in this path.
@@ -116,29 +148,10 @@ SafetyResult CbfSafetyFilter::guard(const Vector14d& preferred, const Vector14d&
       best = anchor;
       best_score = anchor_score;
     }
-    for (int pass = 0; pass < 12; ++pass) {
-      for (int row : active_constraint_rows_) {
-        // Last sweeps prioritize the mandatory table over secondary CBF shaping.
-        // An incompletely satisfied set stays explicitly degraded.
-        if (pass >= 8 && !hard(row))
-          continue;
-        double dot = 0, squared = 0;
-        for (int j = own * 7; j < own * 7 + 7; ++j) {
-          const double a = a_values_[j * constraint_count_ + row];
-          dot += a * candidate[j];
-          squared += a * a;
-        }
-        if (squared < 1e-20)
-          continue;
-        const double correction = dot < lower_bound_[row]   ? lower_bound_[row] - dot
-                                  : dot > upper_bound_[row] ? upper_bound_[row] - dot
-                                                            : 0;
-        if (correction != 0) {
-          for (int j = own * 7; j < own * 7 + 7; ++j)
-            candidate[j] += correction * a_values_[j * constraint_count_ + row] / squared;
-          candidate = bounded(candidate);
-        }
-      }
+    // Share the original twelve-sweep budget with tracking correction. The
+    // final four sweeps still prioritize mandatory table/actuator constraints.
+    for (; repair_passes < 12; ++repair_passes) {
+      project(candidate, repair_passes >= 8);
       const double all = violation(candidate, false, false);
       const bool feasible_hard = violation(candidate, true, false) <= tolerance;
       const double score = violation(candidate, false, true);
@@ -161,13 +174,30 @@ SafetyResult CbfSafetyFilter::guard(const Vector14d& preferred, const Vector14d&
   result.safe_torque = chosen;
   result.solver_succeeded = complete;
   result.maximum_constraint_violation = violation(chosen, false, false);
+  if (result.fatal_solver_fault) {
+    for (int row : active_constraint_rows_) {
+      if (!hard(row))
+        continue;
+      double dot = 0;
+      for (int j = own * 7; j < own * 7 + 7; ++j)
+        dot += a_values_[j * constraint_count_ + row] * chosen[j];
+      const double residual =
+          std::max(double(lower_bound_[row]) - dot, dot - double(upper_bound_[row]));
+      if (residual > result.maximum_mandatory_constraint_violation) {
+        result.maximum_mandatory_constraint_violation = residual;
+        result.worst_mandatory_row = row;
+      }
+    }
+  }
   result.intervention_norm = (chosen.segment<7>(own * 7) - preferred.segment<7>(own * 7)).norm();
   result.arm_intervention_norm[own] = result.intervention_norm;
-  result.solver_status = result.fatal_solver_fault ? "no_valid_mandatory_table_command"
-                         : complete
-                             ? (result.fallback_active ? "local_braking_constraints_satisfied"
-                                                       : "local_candidate_verified")
-                             : "local_braking_secondary_constraints_relaxed";
+  result.solver_status =
+      result.fatal_solver_fault ? "no_valid_mandatory_table_command"
+      : complete
+          ? (result.fallback_active
+                 ? "local_braking_constraints_satisfied"
+                 : (tracking_repaired ? "local_candidate_repaired" : "local_candidate_verified"))
+          : "local_braking_secondary_constraints_relaxed";
   result.filter_time_seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
   return result;

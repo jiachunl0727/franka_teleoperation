@@ -204,6 +204,9 @@ class PoseMapper(Node):
         self.reference_generation = None
         self.last_sequence = None
         self.last_source_ns = None
+        self.motion_reason = "waiting for fresh input and trigger release"
+        self.last_reported_motion_reason = None
+        self.last_motion_report_ns = 0
         self.get_logger().info(
             "Quest mapper active; hardware ownership belongs to the separately launched controller"
         )
@@ -261,7 +264,18 @@ class PoseMapper(Node):
         cmd.clock_sync_valid = state.clock_sync_valid
         cmd.reference_space_generation = state.reference_space_generation
 
-    def publish_disarmed(self, state=None, input_valid=False, trigger_released=False):
+    def publish_disarmed(
+        self, state=None, input_valid=False, trigger_released=False, reason=None
+    ):
+        self.motion_reason = reason or (
+            "trigger released"
+            if trigger_released
+            else (
+                "trigger below engagement threshold"
+                if input_valid and not self.need_release
+                else "fresh input and trigger release required"
+            )
+        )
         cmd = CartesianTeleopCommand()
         cmd.header.stamp = self.get_clock().now().to_msg()
         cmd.header.frame_id = self.base_frame
@@ -281,7 +295,18 @@ class PoseMapper(Node):
             self.reset_motion()
             self.need_release = True
             self.last_state = s
-            self.publish_disarmed(s)
+            self.publish_disarmed(
+                s,
+                reason=(
+                    "Quest disconnected"
+                    if not s.connection_valid
+                    else (
+                        "Quest session not focused"
+                        if not s.session_focused
+                        else "pose action unavailable"
+                    )
+                ),
+            )
             return
         if self.session and s.session_id != self.session:
             self.reset_motion()
@@ -332,7 +357,23 @@ class PoseMapper(Node):
         if not valid:
             self.reset_motion()
             self.need_release = True
-            self.publish_disarmed(s)
+            self.publish_disarmed(
+                s,
+                reason=(
+                    "controller pose invalid or not tracked"
+                    if not (
+                        s.position_valid
+                        and s.orientation_valid
+                        and s.position_tracked
+                        and s.orientation_tracked
+                    )
+                    else (
+                        "trigger action unavailable"
+                        if not s.trigger_active
+                        else "clock/source input invalid or stale"
+                    )
+                ),
+            )
             return
         if s.trigger_value <= self.release:
             self.reset_motion()
@@ -347,7 +388,7 @@ class PoseMapper(Node):
         if not self.measured_pose_fresh():
             self.reset_motion()
             self.need_release = True
-            self.publish_disarmed(s)
+            self.publish_disarmed(s, reason="robot measured pose unavailable or stale")
             return
         try:
             ctrl_p, ctrl_q = pose_values(s.grip_pose)
@@ -385,7 +426,7 @@ class PoseMapper(Node):
         if twist is None:
             self.reset_motion()
             self.need_release = True
-            self.publish_disarmed(s)
+            self.publish_disarmed(s, reason="invalid pose derivative interval")
             return
         self.publish_processed(s, target_p, target_q, twist)
 
@@ -455,6 +496,9 @@ class PoseMapper(Node):
         return list(linear + angular)
 
     def publish_command(self, s, p, q, twist, requested_twist=None):
+        self.motion_reason = (
+            "orientation tracking" if self.orientation_only else "Cartesian tracking"
+        )
         cmd = CartesianTeleopCommand()
         ros_now_ns = self.get_clock().now().nanoseconds
         source_age_ns = max(0, time.monotonic_ns() - s.source_time_pc_monotonic_ns)
@@ -502,7 +546,9 @@ class PoseMapper(Node):
         ):
             self.reset_motion()
             self.need_release = True
-            self.publish_disarmed(self.last_state)
+            self.publish_disarmed(
+                self.last_state, reason="controller input watchdog expired"
+            )
         elif not self.enabled:
             # Repeated release messages preserve permission only while the actual
             # source release remains fresh; faults never masquerade as releases.
@@ -513,7 +559,24 @@ class PoseMapper(Node):
             )
             released = valid_input and self.last_state.trigger_value <= self.release
             self.publish_disarmed(
-                self.last_state, input_valid=valid_input, trigger_released=released
+                self.last_state,
+                input_valid=valid_input,
+                trigger_released=released,
+                reason=None if valid_input else self.motion_reason,
+            )
+        if self.motion_reason != self.last_reported_motion_reason and (
+            not self.last_motion_report_ns
+            or now_ns - self.last_motion_report_ns >= 500000000
+        ):
+            self.last_reported_motion_reason = self.motion_reason
+            self.last_motion_report_ns = now_ns
+            trigger = (
+                self.last_state.trigger_value if self.last_state is not None else 0.0
+            )
+            self.get_logger().info(
+                f"Mapper state: {self.motion_reason}; enabled={self.enabled} "
+                f"trigger={trigger:.3f} engage={self.engage:.3f} release={self.release:.3f} "
+                f"release_required={self.need_release} measured_pose_fresh={self.measured_pose_fresh()}"
             )
 
 

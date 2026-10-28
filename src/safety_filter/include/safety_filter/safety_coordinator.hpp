@@ -23,6 +23,7 @@ struct ModelRequest {
   uint64_t cycle{0}, stamp_ns{0};
   double period{.001};
   bool motion_active{false}, finish_requested{false};
+  bool homing_active{false};  // Explicit operator homing may enter the singularity barrier domain.
   uint64_t epoch{0}, release_source_ns{0};
 };
 struct SafetyReply {

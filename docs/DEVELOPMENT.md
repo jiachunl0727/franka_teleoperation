@@ -18,6 +18,14 @@ colcon build --base-paths src --packages-up-to teleop_bringup --symlink-install 
 source install/setup.bash
 ```
 
+The installed `teleop_bringup` environment hook supplies domain 42 and
+localhost-only ROS discovery. Explicit domains are retained; use
+`TELEOP_ROS_LOCALHOST_ONLY=0` for intentional remote discovery, because the Humble
+underlay already supplies the ordinary `ROS_LOCALHOST_ONLY=0` default. Re-source the
+workspace in each terminal after rebuilding; old processes keep their original
+environment. This avoids network-wide discovery interference without changing
+Docker definitions, FCI networking or the Quest TCP route.
+
 The dependency helper imports pinned sources and initializes their submodules.
 The build selects the teleoperation dependency graph; it excludes the legacy
 Panda demos. Install dependencies as described in the main README on first

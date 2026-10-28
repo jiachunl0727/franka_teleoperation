@@ -1,6 +1,7 @@
 """Actual launch modes and Menu recording with no active left arm in single-right."""
 
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -189,9 +190,11 @@ class TeleoperationLaunchTest(unittest.TestCase):
                     tracked=True,
                     inward=0.0,
                     joystick=None,
+                    move=False,
                 ):
                     nonlocal sequence
-                    end = time.monotonic() + duration
+                    begin = time.monotonic()
+                    end = begin + duration
                     while time.monotonic() < end:
                         sequence += 1
                         for s in statuses:
@@ -219,8 +222,15 @@ class TeleoperationLaunchTest(unittest.TestCase):
                             m.thumbstick_active = True
                             m.thumbstick_x = -inward if s == "right" else inward
                             if joystick == s:
-                                m.thumbstick_x = .8 if s == "right" else -.8
+                                m.thumbstick_x = 0.8 if s == "right" else -0.8
                             m.grip_pose.orientation.w = 1.0
+                            if move:
+                                progress = min(
+                                    1.0, (time.monotonic() - begin) / duration
+                                )
+                                m.grip_pose.position.x = 0.1 * progress
+                                m.grip_pose.orientation.z = math.sin(0.15 * progress)
+                                m.grip_pose.orientation.w = math.cos(0.15 * progress)
                             b = QuestButtonState()
                             b.name = "x" if s == "left" else "a"
                             b.active = True
@@ -347,10 +357,16 @@ class TeleoperationLaunchTest(unittest.TestCase):
                             1000 * torque_rate_scale,
                         )
                     if not cbf_enabled:
-                        wait(lambda: bool(cbf_statuses), send=True, trigger=0.8)
+                        wait(
+                            lambda: bool(cbf_statuses),
+                            send=True,
+                            trigger=0.8,
+                            menu=record,
+                        )
                         self.assertTrue(
                             all(
-                                s.mandatory_table_guard_enabled and s.execution == "asynchronous"
+                                s.mandatory_table_guard_enabled
+                                and s.execution == "asynchronous"
                                 and s.solver_succeeded
                                 and not s.fallback_active
                                 for s in cbf_statuses
@@ -475,7 +491,32 @@ class TeleoperationLaunchTest(unittest.TestCase):
                                 ],
                                 0,
                             )
-                        # A second episode gets a unique path and finalizes on launch shutdown.
+                        # Home between episodes, then retain the full clutch
+                        # reference through sustained translation and rotation.
+                        drive(1.1, home="right")
+                        drive(0.05)
+                        wait(lambda: homes["right"][-1].phase == "succeeded", send=True)
+                        self.assertEqual(homes["right"][-1].request_id, 1)
+                        drive(0.15)
+                        drive(0.1, trigger=0.8)
+                        first = len(statuses["right"])
+                        drive(1.0, trigger=0.8, move=True)
+                        self.assertTrue(commands["right"][-1].motion_enabled)
+                        self.assertGreater(
+                            commands["right"][-1].target_pose.position.x, 0.49
+                        )
+                        self.assertGreater(
+                            commands["right"][-1].target_pose.orientation.z, 0.14
+                        )
+                        samples = statuses["right"][first:]
+                        self.assertGreater(len(samples), 20)
+                        self.assertGreater(
+                            sum(s.motion_enabled for s in samples),
+                            0.8 * len(samples),
+                            log_path.read_text(),
+                        )
+                        # A fresh Menu press after homing starts a second unique
+                        # episode; launch shutdown must finalize that bag too.
                         drive(0.4)
                         drive(0.1, menu=True)
                         wait(lambda: recordings[-1]["phase"] == "recording")
@@ -500,6 +541,11 @@ class TeleoperationLaunchTest(unittest.TestCase):
 
     def test_single_right_default_left_menu_active_topics_and_finalized_bags(self):
         self.run_mode(record=True)
+
+    def test_single_right_menu_and_sustained_motion_after_homing_with_cbf_disabled(
+        self,
+    ):
+        self.run_mode(record=True, cbf_enabled=False)
 
     def test_single_left(self):
         self.run_mode(side="left")

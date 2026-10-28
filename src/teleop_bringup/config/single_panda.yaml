@@ -43,7 +43,7 @@ arms:
     reference_to_robot_xyzw: [0.5, 0.5, 0.5, 0.5]
     translation_scale: 0.75
     rotation_scale: 0.33
-    feedforward_scale: 0.0
+    feedforward_scale: 0.5
     twist_filter_cutoff_hz: 10.0
     # Independent mapped pose and velocity processing (none, low_pass, four_pole).
     pose_filter: none
@@ -64,6 +64,15 @@ arms:
     trigger_release: 0.25
 
 controller:
+  # Explicit values matching the runtime defaults, shared by homing and posture control.
+  home_joint_position: [0.0, -0.7854, 0.0, -2.3562, 0.0, 1.5708, 0.7854]
+  nullspace_enabled: true
+  nullspace_stiffness: 10.0          # Nm/rad
+  nullspace_damping: 6.324555320336759  # Nm s/rad
+  nullspace_joint_limit_gain: 2.0    # Nm
+  nullspace_joint_limit_margin: 0.35  # rad
+  nullspace_max_torque: 5.0         # Nm
+  nullspace_ramp_seconds: 0.25
   lambda_translation: 15.0
   lambda_rotation: 15.0
   gain_translation: 50.0

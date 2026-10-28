@@ -94,6 +94,26 @@ TEST(CBF, PandaDefaultsAndLimitsValidate) {
   ids[0].world_from_base.linear()(0, 0) = 2;
   EXPECT_FALSE(filter.configure(parameters(), ids, &error));
 }
+TEST(CBF, VerifiedTrackingRepairAllocatesNothingAndRetainsActuatorAndAccelerationBounds) {
+  auto p = parameters();
+  p.active_arms = {true, false};
+  cbf::CbfSafetyFilter filter;
+  configure(filter, p);
+  auto s = state();
+  s.arm[0].previous_torque[0] = 6.8;
+  cbf::Vector14d nominal = cbf::Vector14d::Zero();
+  nominal[0] = 20;
+  allocations = 0;
+  track_allocations = true;
+  const auto out = filter.guard(nominal, cbf::Vector14d::Zero(), s, .001, 0, 0, 0);
+  track_allocations = false;
+  EXPECT_EQ(allocations, 0u);
+  EXPECT_TRUE(out.solver_succeeded);
+  EXPECT_FALSE(out.fallback_active);
+  EXPECT_LE(out.maximum_constraint_violation, 1e-3);
+  EXPECT_LE(out.safe_torque[0], 7.001);
+  EXPECT_GE(out.safe_torque[0], 6.8 - .9);
+}
 TEST(ActuatorLimits, DefaultsUsePublishedFciCeilingsAndScalesAreValidated) {
   const cbf::SafetyParameters defaults;
   EXPECT_TRUE(defaults.maximum_joint_torque.isApprox(
@@ -559,6 +579,37 @@ TEST(Singularity, InvalidDomainAndInfeasibleActuationStopWithoutCertifiedFallbac
   EXPECT_EQ(result.singularity_constraints, 0);
 }
 
+TEST(Singularity, ExplicitHomingMayEnterFiniteDomainWithoutBypassingBarrierRows) {
+  auto p = parameters();
+  p.active_arms = {true, false};
+  p.singularity_enabled = true;
+  p.solver_max_iterations = 2000;
+  auto s = state();
+  s.arm[0] = safety_filter::panda_model_fixture(s.arm[0].q);
+  const auto measure = cbf::singularity_measure(s.arm[0], .3);
+  ASSERT_TRUE(measure.valid);
+  p.singularity_minimum_manipulability = std::sqrt(measure.value) * 1.001;
+  cbf::CbfSafetyFilter filter;
+  configure(filter, p);
+  auto result = filter.filter(cbf::Vector14d::Zero(), s, .001, {true, false});
+  ASSERT_TRUE(result.fatal_input_fault);
+  result = filter.filter(cbf::Vector14d::Zero(), s, .001, {true, false}, true, {true, false});
+  EXPECT_TRUE(result.singularity_state_invalid);  // Never claim a valid initial domain.
+  EXPECT_FALSE(result.fatal_input_fault);
+  ASSERT_TRUE(result.solver_succeeded) << result.solver_status;
+  EXPECT_EQ(result.singularity_constraints, 1);
+  EXPECT_LE(result.maximum_constraint_violation, p.solver_feasibility_tolerance);
+  const double scale = p.singularity_minimum_manipulability * p.singularity_minimum_manipulability;
+  const double h = measure.value / scale - 1;
+  EXPECT_GE(measure.gradient.dot(result.safe_torque.head<7>()) / scale + 64 * h, -1e-3);
+  // Permission belongs to the affected arm and only the current request.
+  result = filter.filter(cbf::Vector14d::Zero(), s, .001, {true, false}, true, {false, true});
+  EXPECT_TRUE(result.fatal_input_fault);
+  s.arm[0].frame_jacobian[8](0, 0) += .01;
+  result = filter.filter(cbf::Vector14d::Zero(), s, .001, {true, false}, true, {true, false});
+  EXPECT_TRUE(result.fatal_input_fault);
+}
+
 TEST(Singularity, TorqueBarrierIncludesMassCoriolisAndVelocityCurvature) {
   auto p = parameters();
   p.active_arms = {true, false};
@@ -647,7 +698,7 @@ TEST(CollisionGeometry, DisabledFamiliesSkipTransformsAndDistancesButKeepTableGu
     track_allocations = false;
     EXPECT_EQ(allocations, 0u);
     EXPECT_EQ(out.geometry_work.capsule_transforms, 12 * active_count);
-    EXPECT_EQ(out.table_constraints, 12 * active_count);
+    EXPECT_EQ(out.table_constraints, 24 * active_count);
     EXPECT_EQ(out.geometry_work.self_pair_distances, 0);
     EXPECT_EQ(out.geometry_work.inter_arm_pair_distances, 0);
     EXPECT_EQ(out.geometry_work.obstacle_distances, 0);

@@ -122,27 +122,36 @@ AsyncSafetyOutput AsyncSafetyController::update(const ModelRequest& request,
                                    valid_model(peer->state));
   if (have_result_ && cached_.source_ns[arm_] <= now)
     out.worker_age_ns = now - cached_.source_ns[arm_];
-  out.worker_usable =
+  const bool worker_model_usable =
       !safety_.enabled ||
       (have_result_ && cached_.source_ns[arm_] > 0 && cached_.source_ns[arm_] <= now &&
        out.worker_age_ns <= limits_.maximum_result_age_ns &&
        cached_.completed_ns >= cached_.source_ns[arm_] && cached_.completed_ns <= now &&
-       cached_.epoch[arm_] == request.epoch && cached_.result.solver_succeeded &&
-       !cached_.result.fallback_active && !cached_.result.fatal_input_fault &&
-       cached_.result.safe_torque.allFinite() && cached_.nominal.allFinite() &&
-       cached_.source_q[arm_].allFinite() && cached_.source_dq[arm_].allFinite() &&
+       cached_.result.solver_succeeded && !cached_.result.fallback_active &&
+       !cached_.result.fatal_input_fault && cached_.result.safe_torque.allFinite() &&
+       cached_.nominal.allFinite() && cached_.source_q[arm_].allFinite() &&
+       cached_.source_dq[arm_].allFinite() &&
        (request.state.q - cached_.source_q[arm_]).cwiseAbs().maxCoeff() <=
            limits_.result_joint_change &&
        (request.state.dq - cached_.source_dq[arm_]).cwiseAbs().maxCoeff() <=
            limits_.result_velocity_change);
+  out.worker_usable =
+      worker_model_usable && (!safety_.enabled || cached_.epoch[arm_] == request.epoch);
   const bool healthy = out.worker_usable && out.peer_usable && !model_reused_;
   if (pending_epoch_ != request.epoch) {
     pending_epoch_ = request.epoch;
     pending_since_ = now;
     have_brake_ = false;
-    healthy_since_ = 0;
+    // A mode change alone is not an interruption of verified health. In
+    // particular, a healthy released dwell must count toward re-engagement.
+    // The health check below still resets the dwell for an unavailable or
+    // rejected worker model certificate, peer or model.
   }
-  if (healthy) {
+  // A fresh successful certificate of the unchanged physical state can keep
+  // the health dwell running across a nominal-mode transition. Its torque is
+  // still unusable until an exact current-epoch result arrives. Otherwise each
+  // release/engagement throws away the entire released recovery dwell.
+  if (worker_model_usable && out.peer_usable && !model_reused_) {
     if (!healthy_since_)
       healthy_since_ = now;
   } else
@@ -153,6 +162,7 @@ AsyncSafetyOutput AsyncSafetyController::update(const ModelRequest& request,
       degraded_ = true;
       enter = true;
       release_before_fault_ = request.release_source_ns;
+      healthy_since_ = 0;  // Pre-fault health cannot satisfy post-fault recovery.
     }
   };
   const bool matching_failed = have_result_ && cached_.epoch[arm_] == request.epoch &&

@@ -133,6 +133,7 @@ class UsbTransport {
   static constexpr uint64_t kMaxClockAgeNs = 3'000'000'000ULL;
   static constexpr uint64_t kMaxClockUncertaintyNs = 10'000'000ULL;
   static constexpr uint64_t kClockSyncPeriodNs = 1'000'000'000ULL;
+  static constexpr uint64_t kReconnectPeriodNs = 250'000'000ULL;
   int connect_loopback() {
     const int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return -1;
@@ -252,6 +253,7 @@ class UsbTransport {
     int socket_fd = -1;
     bool has_connected_once = false;
     uint64_t last_sync_ns = 0;
+    uint64_t next_connect_ns = 0;
     while (!stopping_.load()) {
       ControllerSample sample;
       bool have_sample = false;
@@ -284,7 +286,12 @@ class UsbTransport {
         continue;
       }
       if (socket_fd < 0) {
-        if (!have_sample) continue;
+        // Reconnect even when OpenXR is temporarily not producing frames.
+        // Transport readiness must not depend on a fresh tracking sample;
+        // no controller command is synthesized or replayed by this retry.
+        const uint64_t now = monotonic_time_ns();
+        if (now < next_connect_ns) continue;
+        next_connect_ns = now + kReconnectPeriodNs;
         socket_fd = connect_loopback();
         connected_.store(socket_fd >= 0);
         if (socket_fd < 0) continue;

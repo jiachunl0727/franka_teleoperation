@@ -156,6 +156,18 @@ class QuestUsbBridge final : public rclcpp::Node {
     worker_ = std::thread([this] { accept_loop(); });
     RCLCPP_INFO(get_logger(), "Quest USB TCP bridge listening on %s:%d", bind_address.c_str(),
                 port);
+    connection_watchdog_ = create_wall_timer(std::chrono::seconds(5), [this, port] {
+      if (client_fd_.load() < 0) {
+        if (!waiting_logged_.exchange(true))
+          RCLCPP_WARN(get_logger(),
+                      "No Quest TCP client is connected. An arm/Hand ready message does not "
+                      "confirm headset transport. Check the headset USB indicator and restore "
+                      "ADB reverse tcp:%d to tcp:%d with scripts/quest_adb_reverse.sh.",
+                      port, port);
+      } else {
+        waiting_logged_.store(false);
+      }
+    });
   }
 
   ~QuestUsbBridge() override {
@@ -227,6 +239,7 @@ class QuestUsbBridge final : public rclcpp::Node {
                     std::strerror(errno));
       }
       client_fd_.store(client);
+      waiting_logged_.store(false);
       RCLCPP_INFO(get_logger(), "Quest TCP client connected");
       consume_connection(client);
       shutdown(client, SHUT_RDWR);
@@ -517,6 +530,8 @@ class QuestUsbBridge final : public rclcpp::Node {
   std::array<rclcpp::Publisher<Message>::SharedPtr, 2> controller_publishers_;
   int listener_fd_{-1};
   std::atomic<int> client_fd_{-1};
+  std::atomic<bool> waiting_logged_{false};
+  rclcpp::TimerBase::SharedPtr connection_watchdog_;
   std::atomic<bool> stopping_{false};
   uint64_t command_timeout_ns_{100'000'000ULL};
   uint64_t max_clock_uncertainty_ns_{10'000'000ULL};

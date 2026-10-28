@@ -18,6 +18,8 @@ def default_recording_topics(arms):
                 p["command_topic"],
                 p["measured_pose_topic"],
                 full_topic("tracking_samples", arm.namespace),
+                full_topic("cbf_status", arm.namespace),
+                full_topic("gripper_events", arm.namespace),
             ]
         )
     return list(dict.fromkeys(topics))

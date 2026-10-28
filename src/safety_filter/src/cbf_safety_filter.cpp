@@ -252,7 +252,7 @@ bool CbfSafetyFilter::configure(const SafetyParameters& parameters,
   joint_acceleration_row_begin_ = joint_velocity_row_begin_ + 2 * kDualArmDof;
   singularity_row_begin_ = joint_acceleration_row_begin_ + kDualArmDof;
   table_row_begin_ = singularity_row_begin_ + kArmCount;
-  self_row_begin_ = table_row_begin_ + kArmCount * static_cast<int>(capsules_.size());
+  self_row_begin_ = table_row_begin_ + kArmCount * 2 * static_cast<int>(capsules_.size());
   inter_arm_row_begin_ = self_row_begin_ + kArmCount * static_cast<int>(self_pairs_.size());
   obstacle_row_begin_ = inter_arm_row_begin_ + static_cast<int>(inter_arm_pairs_.size());
   constraint_count_ =
@@ -302,8 +302,8 @@ bool CbfSafetyFilter::setupSolver(std::string* error, bool prepare_solver) {
       arm = row - singularity_row_begin_;
       enabled = parameters_.singularity_enabled;
     } else if (row < self_row_begin_) {
-      arm = (row - table_row_begin_) / static_cast<int>(capsules_.size());
-      const int capsule = (row - table_row_begin_) % static_cast<int>(capsules_.size());
+      arm = (row - table_row_begin_) / (2 * static_cast<int>(capsules_.size()));
+      const int capsule = ((row - table_row_begin_) / 2) % static_cast<int>(capsules_.size());
       enabled = parameters_.table_enabled &&
                 capsules_[capsule].link_index >= parameters_.table_minimum_link_index;
     } else if (row < inter_arm_row_begin_) {
@@ -585,6 +585,7 @@ Eigen::Vector3d CbfSafetyFilter::jacobianDerivativeVelocity(int row, const Point
 void CbfSafetyFilter::buildConstraints(const DualArmState& state, double period_seconds,
                                        SafetyResult* result) {
   clearRows();
+  singularity_domain_rejected_ = false;
   result->minimum_table_clearance = kLargeClearance;
   result->minimum_self_clearance = kLargeClearance;
   result->minimum_inter_arm_clearance = kLargeClearance;
@@ -711,7 +712,12 @@ void CbfSafetyFilter::buildConstraints(const DualArmState& state, double period_
     // hdot + omega*h >= 0 initially. Do not claim recovery from outside it.
     if (!measure.valid || h < -1e-6 || hdot + omega * h < -1e-6) {
       result->singularity_state_invalid = true;
-      if (!guard_recovery_ || !measure.valid) {
+      // Tracking requires a valid initial barrier domain. Explicit homing may
+      // recover from a finite out-of-domain posture, but retains this same
+      // acceleration inequality and every other constraint. Invalid kinematics
+      // never authorize recovery. The local guard independently rechecks it.
+      if ((!guard_recovery_ && !homing_recovery_[arm]) || !measure.valid) {
+        singularity_domain_rejected_ = true;
         disableRow(row);
         continue;
       }
@@ -800,33 +806,40 @@ void CbfSafetyFilter::buildConstraints(const DualArmState& state, double period_
   row = table_row_begin_;
   for (int arm = 0; arm < kArmCount; ++arm) {
     if (!parameters_.active_arms[arm] || !parameters_.table_enabled) {
-      row += static_cast<int>(capsules_.size());
+      row += 2 * static_cast<int>(capsules_.size());
       continue;
     }
-    for (size_t capsule = 0; capsule < capsules_.size(); ++capsule, ++row) {
-      if (capsules_[capsule].link_index < parameters_.table_minimum_link_index)
-        continue;
-      const WorldCapsule& current = world_capsules[arm][capsule];
-      const Endpoint& lowest =
-          current.first.position.z() < current.second.position.z() ? current.first : current.second;
-      const double clearance = lowest.position.z() - current.radius - parameters_.table_height -
-                               parameters_.table_minimum_clearance - guard_reserve_;
-      result->minimum_table_clearance = std::min(result->minimum_table_clearance, clearance);
-      const bool active = guard_recovery_ || clearance <= parameters_.collision_activation_distance;
-      if (!active) {
-        disableRow(row);
+    for (size_t capsule = 0; capsule < capsules_.size(); ++capsule) {
+      if (capsules_[capsule].link_index < parameters_.table_minimum_link_index) {
+        row += 2;
         continue;
       }
-      const Eigen::Vector3d normal = Eigen::Vector3d::UnitZ();
-      const double h_dot = normal.dot(lowest.jacobian * velocity);
-      const Eigen::Vector3d jdot_velocity =
-          jacobianDerivativeVelocity(row, lowest.jacobian, velocity, period_seconds);
-      const Vector14d coefficients = inverse_mass * lowest.jacobian.transpose() * normal;
-      const double drift = normal.dot(jdot_velocity - lowest.jacobian * inverse_mass * coriolis);
-      const double lower = -drift - 2.0 * collision_damping * collision_omega * h_dot -
-                           collision_omega * collision_omega * clearance;
-      addLowerConstraint(row, coefficients, lower, true, &result->active_constraints);
-      ++result->table_constraints;
+      const WorldCapsule& current = world_capsules[arm][capsule];
+      // A capsule is above a plane exactly when both endpoint spheres are.
+      // Each endpoint needs its own derivative history: switching the lowest
+      // endpoint in one row introduces a fictitious Jacobian jump at level.
+      for (const Endpoint* endpoint : {&current.first, &current.second}) {
+        const double clearance = endpoint->position.z() - current.radius -
+                                 parameters_.table_height - parameters_.table_minimum_clearance -
+                                 guard_reserve_;
+        result->minimum_table_clearance = std::min(result->minimum_table_clearance, clearance);
+        const bool active =
+            guard_recovery_ || clearance <= parameters_.collision_activation_distance;
+        if (active) {
+          const double h_dot = (endpoint->jacobian * velocity).z();
+          const auto jdot_velocity =
+              jacobianDerivativeVelocity(row, endpoint->jacobian, velocity, period_seconds);
+          const Vector14d coefficients = inverse_mass * endpoint->jacobian.row(2).transpose();
+          const double drift = (jdot_velocity - endpoint->jacobian * inverse_mass * coriolis).z();
+          const double lower = -drift - 2.0 * collision_damping * collision_omega * h_dot -
+                               collision_omega * collision_omega * clearance;
+          addLowerConstraint(row, coefficients, lower, true, &result->active_constraints);
+          ++result->table_constraints;
+        } else {
+          disableRow(row);
+        }
+        ++row;
+      }
     }
   }
 
@@ -997,7 +1010,9 @@ Vector14d CbfSafetyFilter::boundedFallback(const DualArmState& state, double per
 SafetyResult CbfSafetyFilter::filter(const Vector14d& nominal_torque,
                                      const DualArmState& supplied_state, double period_seconds,
                                      const std::array<bool, kArmCount>& motion_active,
-                                     bool activity_valid) {
+                                     bool activity_valid,
+                                     const std::array<bool, kArmCount>& homing_recovery) {
+  homing_recovery_ = homing_recovery;
   SafetyResult result;
   const auto begin = std::chrono::steady_clock::now();
   const auto finish = [&] {
@@ -1072,7 +1087,7 @@ SafetyResult CbfSafetyFilter::filter(const Vector14d& nominal_torque,
   }
 
   buildConstraints(state, period_seconds, &result);
-  if (result.singularity_state_invalid) {
+  if (singularity_domain_rejected_) {
     result.fallback_active = result.fatal_input_fault = true;
     result.solver_status = "outside_singularity_barrier_domain_or_invalid_kinematics";
     return finish();  // Owner terminates; placeholder must not be sent.

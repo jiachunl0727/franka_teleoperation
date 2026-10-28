@@ -44,6 +44,14 @@ colcon build --base-paths src --symlink-install --packages-up-to teleop_bringup 
 source install/setup.bash
 ```
 
+Sourcing this workspace also defaults to `ROS_DOMAIN_ID=42` and
+`ROS_LOCALHOST_ONLY=1`. This keeps the local teleoperation graph separate from
+unrelated lab DDS traffic. Source the same workspace in every monitoring,
+recording and PlotJuggler terminal. Explicit domain values are preserved;
+for remote ROS observers, set the same domain and `TELEOP_ROS_LOCALHOST_ONLY=0` before
+sourcing on each PC. These settings affect ROS discovery, not direct FCI or the
+Quest USB TCP connection. See [network diagnosis](docs/TELEOPERATION_RUNTIME.md#ros-discovery-and-the-quest-connection).
+
 Colcon builds libfranka before its dependent controllers automatically. This
 command builds the teleoperation pipeline, excluding the legacy Panda demos.
 Libfranka's own tests/examples default to off; an unused `BUILD_TESTING` warning
@@ -130,6 +138,9 @@ also launches the app. Joystick direction control requires the updated APK,
 which now sends both joystick axes and their availability. Rebuild/reinstall
 this APK, rebuild the ROS message and its consumers, and restart the pipeline.
 Older APK packets remain usable for arm motion but cannot actuate the Hand.
+The 2026-10-28 APK also reconnects to a restarted bridge without waiting for
+new OpenXR tracking frames. Install that update once with
+`bash scripts/quest_install.sh`; no motion input is replayed on reconnect.
 
 For subsequent sessions with the updated APK, reuse it:
 
@@ -188,6 +199,11 @@ cable's accepted diameter range. Joystick displacement beyond the engage
 threshold selects direction only: fixed `speed_mps`/`open_speed_mps` and held
 duration determine travel. Side grip, joystick click and vertical deflection
 no longer command the Hand.
+
+Holding a joystick direction runs one continuous firmware motion toward the
+configured close/open width at the selected speed. Centering requests stop;
+there is no fixed-distance stepping or position-step completion gate.
+SDK/firmware cancellation latency can add travel after centering.
 
 Closing uses `grasp()` with the configured force. A successful command,
 `is_grasped` readback, and cable-width acceptance confirm a hold; empty closure

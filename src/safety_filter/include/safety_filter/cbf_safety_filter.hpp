@@ -81,6 +81,8 @@ struct SafetyResult {
   double solver_time_seconds{0.0};
   double intervention_norm{0.0};
   double maximum_constraint_violation{0.0};
+  double maximum_mandatory_constraint_violation{0.0};
+  int worst_mandatory_row{-1};
   double solver_candidate_constraint_violation{0.0};
   double minimum_table_clearance{1.0e9};
   double minimum_self_clearance{1.0e9};
@@ -128,7 +130,8 @@ class CbfSafetyFilter {
   void reset();
   SafetyResult filter(const Vector14d& nominal_torque, const DualArmState& state,
                       double period_seconds, const std::array<bool, kArmCount>& motion_active,
-                      bool activity_valid = true);
+                      bool activity_valid = true,
+                      const std::array<bool, kArmCount>& homing_recovery = {});
   [[nodiscard]] bool configured() const { return workspace_ != nullptr; }
   [[nodiscard]] size_t solverConstraintCount() const { return solver_logical_rows_.size(); }
 
@@ -233,6 +236,8 @@ class CbfSafetyFilter {
   bool invalid_constraint_{false};
   int last_hold_priority_arm_{-1};
   bool guard_recovery_{false};
+  std::array<bool, kArmCount> homing_recovery_{};
+  bool singularity_domain_rejected_{false};
   double guard_reserve_{0};
   double guard_peer_reserve_{0};
 };

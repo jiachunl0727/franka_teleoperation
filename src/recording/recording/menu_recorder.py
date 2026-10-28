@@ -28,13 +28,15 @@ class MenuGate:
         self.sequence = self.source = self.last_toggle = 0
         self.release_seen = False
         self.pressed = False
+        self.reason = "fresh Menu release required"
 
-    def reset(self):
+    def reset(self, reason="fresh Menu release required"):
         self.release_seen = self.pressed = False
+        self.reason = reason
 
     def watchdog(self, now):
         if self.source and now - self.source > 100000000:
-            self.reset()
+            self.reset("left Menu input timed out; fresh release required")
 
     def update(self, msg, now):
         if msg.controller_id != "left":
@@ -55,7 +57,20 @@ class MenuGate:
             and 0 <= msg.clock_uncertainty_ns <= 10000000
         )
         if not valid:
-            self.reset()
+            reason = (
+                "Menu action unavailable"
+                if len(buttons) != 1 or not buttons[0].active
+                else (
+                    "Quest disconnected"
+                    if not msg.connection_valid
+                    else (
+                        "Quest session not focused"
+                        if not msg.session_focused
+                        else "clock/source input invalid or stale"
+                    )
+                )
+            )
+            self.reset(reason + "; fresh release required")
             return False
         identity = (msg.session_id, msg.reference_space_generation)
         changed = identity != self.identity
@@ -68,7 +83,7 @@ class MenuGate:
             or source <= self.source
             or (self.source and source - self.source > 100000000)
         ):
-            self.reset()
+            self.reset("Menu input order/gap fault; fresh release required")
             # An invalid/order fault cannot itself establish physical release.
             if msg.sequence <= self.sequence or source <= self.source:
                 return False
@@ -81,16 +96,21 @@ class MenuGate:
         if not pressed:
             self.release_seen = True
             self.pressed = False
+            self.reason = "ready"
             return False
         rising = not self.pressed
         self.pressed = True
-        if (
-            not self.release_seen
-            or not rising
-            or source - self.last_toggle < self.debounce_ns
-        ):
+        if not self.release_seen:
+            self.reason = "fresh Menu release required"
+            return False
+        if not rising:
+            self.reason = "Menu held; release before another toggle"
+            return False
+        if source - self.last_toggle < self.debounce_ns:
+            self.reason = "Menu press within debounce interval"
             return False
         self.last_toggle = source
+        self.reason = "Menu toggle accepted"
         return True
 
 
@@ -130,6 +150,11 @@ class MenuRecorder(Node):
         self.selected = []
         self.phase = "idle"
         self.message = ""
+        self.stop_started_ns = 0
+        self.stop_stage = 0
+        self.last_report = None
+        self.menu_down = False
+        self.last_input_reason = self.gate.reason
         self.events = self.create_publisher(
             String,
             "recording_status",
@@ -142,6 +167,12 @@ class MenuRecorder(Node):
             20,
         )
         self.create_timer(0.05, self.tick)
+        self.get_logger().info(
+            "Recording controlled by fresh LEFT Menu presses on "
+            + self.get_parameter("controller_state_topic").value
+            + "; homing does not disable recording. Output root: "
+            + str(self.root)
+        )
         self.publish()
 
     def publish(self):
@@ -154,18 +185,44 @@ class MenuRecorder(Node):
                 message=self.message,
                 output=self.output,
                 topics=self.selected,
+                input_reason=self.gate.reason,
+                release_seen=self.gate.release_seen,
             )
         )
         self.events.publish(msg)
+        report = (self.phase, self.message, self.output)
+        if report != self.last_report:
+            self.last_report = report
+            message = f"Recording {self.phase}: {self.message}; output={self.output or '(none)'}"
+            if self.phase == "error":
+                self.get_logger().error(message)
+            else:
+                self.get_logger().info(message)
 
     def on_input(self, msg):
+        # A fresh press must see an already exited recorder as complete even
+        # if the periodic collector has not run yet. Never consume that press
+        # against a stale 'stopping' phase.
+        self.poll_process(time.monotonic_ns())
+        buttons = [b for b in msg.buttons if b.name == "menu"]
+        down = bool(buttons and buttons[0].pressed)
+        rising = down and not self.menu_down
+        self.menu_down = down
         if self.gate.update(msg, time.monotonic_ns()):
             if self.phase == "stopping":
+                self.get_logger().warning(
+                    "Menu press ignored while bag is finalizing; press again after idle"
+                )
                 return  # No queued episode while the previous bag finalizes.
             if self.process is None:
                 self.start()
             else:
                 self.stop()
+        else:
+            if rising:
+                self.get_logger().warning(
+                    "Menu press did not toggle: " + self.gate.reason
+                )
 
     def start(self):
         self.selected = [
@@ -205,6 +262,7 @@ class MenuRecorder(Node):
             )
             self.phase = "recording"
             self.message = "started by left Menu"
+            self.stop_started_ns = self.stop_stage = 0
         except Exception as error:
             if self.log:
                 self.log.close()
@@ -214,7 +272,7 @@ class MenuRecorder(Node):
         self.publish()
 
     def stop(self):
-        if self.process is None:
+        if self.process is None or self.phase == "stopping":
             return
         try:
             os.killpg(self.process.pid, signal.SIGINT)
@@ -222,12 +280,36 @@ class MenuRecorder(Node):
             pass
         self.phase = "stopping"
         self.message = "finalizing bag"
+        self.stop_started_ns = time.monotonic_ns()
+        self.stop_stage = 0
         self.publish()
 
     def tick(self):
-        self.gate.watchdog(time.monotonic_ns())
+        now = time.monotonic_ns()
+        self.gate.watchdog(now)
+        self.poll_process(now)
+        if self.gate.reason != self.last_input_reason:
+            self.last_input_reason = self.gate.reason
+            self.publish()
+
+    def poll_process(self, now):
         if self.process is not None:
             code = self.process.poll()
+            if code is None and self.phase == "stopping":
+                limit = 10000000000 if self.stop_stage == 0 else 3000000000
+                if self.stop_stage < 2 and now - self.stop_started_ns >= limit:
+                    sig = signal.SIGTERM if self.stop_stage == 0 else signal.SIGKILL
+                    try:
+                        os.killpg(self.process.pid, sig)
+                    except ProcessLookupError:
+                        pass
+                    self.stop_stage += 1
+                    self.stop_started_ns = now
+                    self.message = f"bag finalization exceeded timeout; sent {sig.name}"
+                    self.get_logger().warning(
+                        self.message + "; inspect " + self.output + ".recorder.log"
+                    )
+                    self.publish()
             if code is not None:
                 normal = (
                     self.phase == "stopping"
@@ -242,6 +324,7 @@ class MenuRecorder(Node):
                 )
                 self.log.close()
                 self.log = self.process = None
+                self.stop_started_ns = self.stop_stage = 0
                 self.publish()
 
     def close(self):

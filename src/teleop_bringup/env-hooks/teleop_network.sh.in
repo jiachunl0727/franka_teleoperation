@@ -1,0 +1,5 @@
+# Keep this PC's teleoperation graph separate from unrelated lab DDS traffic.
+# Humble's underlay already supplies ROS_LOCALHOST_ONLY=0. Use a dedicated
+# override to distinguish an intentional remote graph from that underlay default.
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
+export ROS_LOCALHOST_ONLY="${TELEOP_ROS_LOCALHOST_ONLY:-1}"

@@ -61,13 +61,23 @@ finishing waits for both owners' finish requests, without requiring a final QP.
 
 ## Current-state guard and fallback
 
+The recovery dwell measures continuous verified health, including time spent
+with the trigger released. A release-to-engagement mode change alone does not
+restart that dwell. A missing or rejected current-context result, unavailable
+peer or model interruption does. Recovery still requires both a fresh post-fault
+release and deliberate engagement; a held trigger cannot resume tracking by
+itself. Pre-fault healthy time is discarded when a new fallback begins.
+
 `AsyncSafetyController` owns per-arm model/result acceptance and braking/holding.
 `CbfSafetyFilter::guard()` rebuilds current constraints without allocating an
-OSQP workspace or calling the solver. It verifies a bounded preferred torque;
-if it fails, the guard starts from a braking/holding command and performs at most
-12 fixed constraint-repair sweeps. Eight sweeps consider the full enabled set;
-the last four prioritize mandatory actuator/table rows. No convergence wait or
-unbounded iteration is used. A fully feasible preferred torque needs no repair. Before escalating a failed
+OSQP workspace or calling the solver. It verifies a bounded preferred torque.
+If needed, up to four fixed sweeps correct that tracking candidate. A correction
+that passes **every active current-state row** is normal safety intervention
+(`local_candidate_repaired`), so changing references do not automatically latch
+braking. If no such correction is found, the guard starts from a braking/holding
+command. Both stages share at most 12 sweeps total; the final four prioritize
+mandatory actuator/table rows. No convergence wait or unbounded iteration is
+used. A fully feasible preferred torque needs no repair. Before escalating a failed
 repair, the actual current robot torque is also bounded and checked against the
 current mandatory rows; an old worker torque is never replayed unchecked.
 
@@ -80,6 +90,7 @@ constraint corrections can still change the braking torque.
 
 | Condition | Default asynchronous response |
 | --- | --- |
+| Current tracking candidate can be corrected within every active row | Apply the verified correction and continue tracking |
 | Late, stale, failed or infeasible worker result | Local braking/holding; FCI retained |
 | Matching result not yet available for a new context | Bounded warmup holding; no stale target replay |
 | Healthy worker after a latched fallback | Keep holding until fresh post-fault trigger release/re-engagement and healthy dwell |
@@ -190,15 +201,28 @@ calculations and bounding-box rejections without callback allocation.
 
 `table_height` is the horizontal table plane's world z. Both arms use their
 surveyed `world_from_base_xyz_xyzw` transforms to evaluate it. The local guard
-checks the lowest endpoint of every modeled capsule, subtracting capsule radius,
+checks both endpoints of every modeled capsule, subtracting capsule radius,
 plane height, `table_minimum_clearance` and the local uncertainty reserve. Logical
 links below 2 are excluded as mounting geometry; this does not model arbitrary
 fixtures around the base.
+
+Each endpoint has its own barrier row and Jacobian derivative history. Using one
+row that switches to whichever endpoint is lowest can introduce an artificial
+acceleration when a capsule crosses horizontal; this caused a reproducible false
+mandatory-table fault in a clear-arm fixture. Checking both endpoint spheres
+preserves the capsule/plane geometry and avoids that point-identity switch.
 
 Table rows remain present at **every height** in the local guard, even with
 `pipeline.cbf_enabled: false`. The guard considers velocity, model acceleration
 and torque-rate limits, rather than merely clipping an end-effector target z.
 Zero-authority table rows are retained and can cause an exceptional stop.
+After an exceptional local-guard stop, the non-realtime shutdown path logs the
+actual callback's minimum table clearance, mandatory residual, worst logical row,
+table settings and world transform. It saves that callback's model to the reported
+`/tmp/franka-cbf-guard-arm-ARM-TIMESTAMP.txt` path, with a `.peer` snapshot when
+available. These are callback diagnostics rather than an older worker result;
+files retain the `CBF_MODEL_V1` column-major format. Derivative history and physical
+clearance are not established by a single saved model.
 
 There is no universal software guarantee that the table can never be hit:
 incorrect transforms/geometry, insufficient braking distance, infeasible torque
@@ -231,7 +255,25 @@ mode a domain violation degrades tracking and the local guard attempts the
 restorative row where its gradient is valid. It does not immediately terminate
 ownership solely for being outside that domain. At exact singularity the
 manipulability gradient can provide no recovery direction; holding is not an
-escape guarantee. Singularities and other secondary barriers are bypassed when
+escape guarantee.
+
+Explicit operator-requested homing may attempt entry from a finite posture outside
+the singularity domain. It retains the same singularity acceleration inequality,
+all other constraints, and current-state local validation; it cannot bypass an
+infeasible torque bound or invalid kinematics. Permission is per arm and ends
+with homing. Tracking remains blocked outside the domain. Release the trigger,
+request homing (hold A/X for one second and release), then release/re-engage the
+trigger after homing completes. If no feasible entry command exists, the arm
+keeps holding; repositioning requires a separate operator procedure with FCI
+control stopped. Do not lower the configured margin just to dismiss the gate.
+
+`Motion state` now includes raw worker status, worker age/usability, current
+manipulability and its configured minimum. For example,
+`outside_singularity_barrier_domain_or_invalid_kinematics` is different from a
+worker timeout. A fresh successful certificate may maintain the recovery dwell
+through a nominal-mode transition, but its torque is never reused across epochs.
+
+Singularities and other secondary barriers are bypassed when
 optional CBF is disabled; the mandatory table/actuator guards remain.
 
 ## Editable actuator limits, including CBF-disabled operation

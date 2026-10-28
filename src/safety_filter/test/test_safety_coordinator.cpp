@@ -6,6 +6,7 @@
 #include "safety_filter/panda_limits.hpp"
 #include "safety_filter/panda_model_fixture.hpp"
 #include "safety_filter/safety_coordinator.hpp"
+#include "safety_filter/singularity.hpp"
 namespace ft = safety_filter;
 namespace {
 uint64_t now() {
@@ -356,4 +357,33 @@ TEST(Coordinator, InvalidModelSnapshotRemainsAvailableForPostmortem) {
   c.submit(0, request(now(), 43));
   EXPECT_FALSE(c.pump(now()));
   EXPECT_EQ(c.diagnostic_request(0).cycle, 42u);
+}
+TEST(Coordinator, OnlyExplicitHomingCarriesSingularityEntryPermissionToWorker) {
+  ft::SafetyCoordinator c;
+  ft::CoordinatorParameters limits;
+  limits.asynchronous = true;
+  ft::cbf::SafetyParameters safety;
+  safety.active_arms = limits.active;
+  safety.singularity_enabled = true;
+  auto r = request(now());
+  const auto measure = ft::cbf::singularity_measure(r.state, .3);
+  safety.singularity_minimum_manipulability = std::sqrt(measure.value) * 1.001;
+  std::string error;
+  ASSERT_TRUE(c.configure(limits, safety, ids(), &error)) << error;
+  c.submit(0, r);
+  ASSERT_TRUE(c.pump());
+  ft::SafetyReply reply;
+  ASSERT_TRUE(c.receive(0, reply));
+  ASSERT_TRUE(reply.result.fatal_input_fault);
+  std::this_thread::sleep_for(std::chrono::milliseconds(6));
+  r.stamp_ns = now();
+  ++r.cycle;
+  r.homing_active = r.motion_active = true;
+  c.submit(0, r);
+  ASSERT_TRUE(c.pump());
+  ASSERT_TRUE(c.receive(0, reply));
+  EXPECT_FALSE(reply.result.fatal_input_fault);
+  EXPECT_TRUE(reply.result.solver_succeeded) << reply.result.solver_status;
+  EXPECT_EQ(reply.result.singularity_constraints, 1);
+  EXPECT_TRUE(reply.result.singularity_state_invalid);
 }

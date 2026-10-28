@@ -15,6 +15,204 @@ Physical FCI/device operations remain operator actions.
 
 ## Stages and evidence
 
+### Restore continuous full-travel gripper commands (2026-10-28)
+
+- The operator reports that held input still stopped after two increments and
+  requests reversal of the two gripper-motion adjustments. Restored the exact
+  pre-step Hand core, SDK worker, ROS node and tests. Removed `motion_step_ms`
+  and `motion_width_tolerance_m` from standalone/combined configuration and
+  validation. Existing speed, width, cable and force settings are preserved.
+- Inward input again submits one `grasp` toward the configured closing limit;
+  outward submits one `move` toward the configured opening limit. The firmware
+  owns each continuous motion while input stays held. Neutral/input loss still
+  cancel unfinished motion, and confirmed force holds survive neutral/input
+  loss until explicit opening. Previous stop latency remains; this rollback
+  does not claim instantaneous cancellation.
+- Rebuilt the normal ROS overlay. All 96 affected regression cases pass
+  (Quest 34, Hand 42, bringup 20), with zero failures/errors/skips. Tests use
+  synthetic inputs and mock devices; no physical device was operated and no
+  APK change is required. The superseded entries below are historical; their
+  step-based behavior is no longer the implementation. Arm/CBF and recording
+  fixes are outside this gripper rollback.
+
+### Held joystick continuation with real position error (2026-10-28; reverted)
+
+- Preserved the newest hardware Hand log in
+  `log/diagnostics/held_joystick_review_20261028/`. Closing steps repeatedly
+  ended with `success=0`, valid communication and approximately 0.1–0.2 mm
+  endpoint shortfall. The previous software check reused the 10 micrometre
+  feedback-validity allowance for commanded position accuracy, blocking further
+  held steps. Opening already chained commands, with roughly 0.6–0.7 s SDK
+  completion times that can make the finite moves visibly separate.
+- Added `hand.motion_width_tolerance_m` (default 0.0003 m, valid range
+  0.00001–0.001 m) to both combined templates and standalone Hand defaults.
+  Position continuation requires SDK success, endpoint error within this
+  tolerance and at least half of the commanded progress. A successful small
+  position miss does not become cable contact or require joystick centering.
+  The same tolerance ends motion near open/close limits without tiny retries.
+- Feedback-validity bounds, cable acceptance/force confirmation, SDK-failure
+  handling, input freshness, neutral cancellation and bounded target travel
+  remain separate. Raw SDK success and actual start/target/error are now logged
+  to distinguish firmware failure from software position rejection.
+- Robot-free regression holds one direction through five delayed inexact moves
+  in each direction, then centers to cancel continuation. Additional cases
+  cover endpoint completion, small in-band error without false force acquisition,
+  SDK failure and a stall inside the position tolerance. All 106 affected cases
+  pass (Quest 34, Hand 52, bringup 20), with no failures/errors/skips. Normal ROS
+  overlay rebuilt; no APK changes or physical device operations. The public Hand
+  API still executes finite blocking moves, so this correction does not promise
+  seamless streamed velocity or eliminate firmware pauses.
+
+### CBF engagement and bounded joystick Hand motion (2026-10-28; Hand changes reverted)
+
+- Preserved the 12:57/13:00 hardware owner/Hand logs under
+  `log/diagnostics/cbf_gripper_review_20261028/`. Hand stop calls took about
+  0.3–1.8 s; full-travel SDK targets therefore continued after short gestures.
+  Both directions now use targets bounded from live width by
+  `speed * motion_step_ms / 1000` (default 50 ms, configurable 10–100 ms).
+  Successful steps continue only for the latest fresh held direction; neutral
+  clears further travel. Live readback also handles displaced fingers whose
+  cached state still says fully open/closed.
+- Position approach and force acquisition are separate. Contact inside the
+  configured cable band can authorize one bounded force-grasp command only
+  while inward input remains fresh. Neutral before this decision prevents
+  acquisition. Confirmed holds persist; failed/out-of-band grasp attempts do
+  not retry or increase force. Hardware stop latency and SDK round trips remain.
+- The CBF trial showed valid mapped motion requests but worker rejection and a
+  latched re-engagement gate. It had no recorded worker-status history. The
+  preceding recording's final posture has approximately 0.030 manipulability
+  using the pinned kinematics, below the configured 0.050 margin; this is a
+  plausible prerequisite failure, not proof of the next trial's exact state.
+- Corrected recovery dwell across the expected mode/epoch handoff without
+  accepting any torque from an older epoch. Explicit per-arm homing can attempt
+  entry from a finite out-of-domain posture while retaining the same singularity
+  inequality and every other active constraint. Invalid kinematics and genuinely
+  infeasible entry still hold/stop as appropriate; there is no autonomous escape
+  or assurance of recovery. Tracking still requires a valid domain.
+- Console motion diagnostics now include worker status, age/usability and
+  current/configured manipulability. Default bags also include CBF status and
+  Hand events. Existing saved CBF switches, actuator limits, speeds, forces,
+  controller gains and mapping remain as configured.
+- Release build installed. All 231 affected regression cases pass: Quest 34,
+  recording 9, safety 55, controller 65, Hand 48 and bringup 20, with no failures,
+  errors or skips. Tests cover delayed-stop repeated taps in both directions,
+  live-width resynchronization, contact authorization, persistent force hold,
+  CBF epoch recovery and per-arm homing-domain permission. Validation used only
+  synthetic inputs/mock devices; no physical FCI, Hand or USB operation and no
+  APK changes were made in this adjustment.
+
+### Menu restart after homing and sustained tracking correction (2026-10-28)
+
+- Preserved the three latest hardware owner/mapper/recorder logs and bridge
+  logs under `log/diagnostics/motion_menu_review_20261028/`. Later trials had a
+  stable Quest TCP connection and roughly millisecond source ages. Logs showed
+  intermittent tracking unavailability and few reported active-motion states;
+  the raw/mapped logger also incorrectly remembered state changes before its
+  throttle could emit them, hiding later stable engagement. No episode artifacts
+  or high-rate tracking history were available from these trials, so the exact
+  physical contribution of every interruption cannot be reconstructed.
+- Added a full mock sequence: first episode/start-stop, homing, sustained
+  trigger hold through a 10 cm / 0.3 rad mapped reference, then a second Menu
+  episode finalized at shutdown. Before the control fix, mapped targets reached
+  their full values but motion was enabled for only 6--8% of the interval.
+  A synthetic torque fixture also reproduced braking despite a feasible current
+  correction (7.15 Nm candidate versus a 7 Nm acceleration-derived bound).
+- The local guard now spends up to four sweeps correcting the current tracking
+  candidate before selecting braking. It continues tracking only after every
+  active current-state row passes; the status is `local_candidate_repaired`.
+  Tracking and braking share the original 12-sweep bound, with the final four
+  reserved for mandatory constraints. No OSQP call/allocation/wait was added to
+  the callback, and no torque, rate, table or geometric limits were relaxed.
+  Failed/unusable worker/model input and genuinely unavailable corrections
+  still brake/hold with the existing explicit release/re-engagement policy.
+- Fixed recovery dwell restarting solely because release changed to engagement.
+  Healthy released time now counts, while a new fault explicitly discards
+  pre-fault health and actual health interruption still resets the dwell.
+  Regressions cover both continuous released health and exclusion of old health.
+- Reproduced a recorder race in which an accepted fresh Menu press was ignored
+  against `stopping` even though the previous child had already exited. Child
+  completion is now collected before interpreting the press. Added nonblocking
+  finalization escalation matching shutdown's 10 s SIGINT / 3 s SIGTERM grace,
+  followed by SIGKILL if necessary; an unfinished/forced bag remains an error.
+  No future episode is queued while finalization really remains active. The
+  original hardware button timeline was not logged, so these reproduced lifecycle
+  defects are not proof of the exact earlier Menu failure.
+- Recorder console/status now expose phase, output path and rejected Menu-input
+  reason. Homing remains independent of recording. Mapper reasons distinguish
+  tracking/action/clock/anchor/trigger gates; non-realtime owner diagnostics show
+  requested versus forwarded motion, local safety/homing state, target error,
+  speed and torque norms. Fixed raw/mapped throttling so a suppressed transition
+  does not hide a stable state forever. Existing input freshness/tracking gates,
+  saved controller/mapping/safety settings and position holding are preserved.
+- Release build installed in the normal overlay. Final affected suites: all
+  180 cases pass, zero failures/errors/skips (Quest 34, recording 9, safety 52,
+  controllers 65, bringup 20). Both optional-CBF variants pass the sustained
+  reference/recording-after-homing sequence. Allocation instrumentation covers
+  the new tracking-repair branch; genuine infeasibility/fault cases still pass.
+  Initial regressions failed before their fixes; an additional error-path test
+  caught and corrected Humble's restriction against changing logger severity at
+  one call site. Logs: `/tmp/menu-motion-fix-build.log`,
+  `/tmp/menu-motion-active-repro.log`, `/tmp/menu-motion-repair-integration.log`,
+  `/tmp/menu-motion-verified.log`. No physical FCI/Hand/USB operation, Android
+  change or APK installation was performed in this stage. Mock references and
+  controller eligibility are verified; physical smoothness remains operator
+  acceptance work with a recorded tracking episode.
+
+### Hardware trial diagnosis: DDS discovery, table derivative and reconnect (2026-10-28)
+
+- Preserved the three latest controller/Hand/bridge logs and launch directories
+  under `log/diagnostics/launch_review_20261028/`. The 11:47 trial began with
+  robot mode `Move`, never accepted a torque callback and eventually reported
+  a libfranka UDP timeout. Startup now requires healthy `Idle` before requesting
+  torque control; historical `last_motion_errors` alone do not block readiness.
+  This is an early diagnostic/rejection, not automatic device recovery or a
+  repair of a genuinely failed FCI network connection.
+- Reproduced `sequence size exceeds remaining buffer` using only a minimal
+  Humble node, with no repository types: network-wide domain 0 produced 15
+  errors in three seconds, while domain 137 and localhost-only variants produced
+  none. Installed custom-message serialization and source/install definitions
+  matched. A workspace environment hook now supplies domain 42 and local-only
+  discovery; explicitly selected domains remain unchanged. Because Humble's
+  underlay already supplies `ROS_LOCALHOST_ONLY=0`, intentional remote discovery
+  uses `TELEOP_ROS_LOCALHOST_ONLY=0`. A fresh installed-overlay probe confirmed
+  domain 42/local-only and no buffer errors. Docker definitions were unchanged.
+- The 11:48 trial terminated with `no_valid_mandatory_table_command`. The owner
+  reports no table approach/contact or manual movement. Reproduced that status
+  in a clear-arm synthetic model when a horizontal Hand capsule changed its
+  lowest endpoint: one barrier row incorrectly differenced two different point
+  Jacobians. Table barriers now track both endpoint spheres with separate
+  derivative histories, including updated sparse row support and peer-row
+  ownership. The clear-arm regression failed before the change and passes
+  afterward; actual table infeasibility still faults. No clearance, torque or
+  actuator-rate settings were relaxed. A captured hardware model/history was
+  unavailable, so the reproduced bug is not proof of that trial's exact cause.
+- Exceptional local-guard stops now preserve the actual callback-side model
+  and available peer, with clearance/residual/worst-row/settings/transform logs.
+  File output and formatting happen after realtime threads join. The fixed-size
+  fault storage is populated only on a fatal result; normal callback timing
+  updates do not copy/reset that model storage every cycle. Added a mock-process
+  regression checking the saved `CBF_MODEL_V1` snapshot.
+- All three Hand calibrations succeeded. The final 11:50 trial accepted torque
+  callbacks but never logged a Quest TCP connection, despite the app remaining
+  running. Native reconnect had depended on a new OpenXR sample; it now retries
+  every 250 ms even without tracking frames and never synthesizes/replays motion
+  input. A local TCP regression verifies initial connection, peer restart,
+  clock-only reconnection and disarming without producing controller samples.
+  The bridge warns after five seconds without a client. Physical ADB/USB routing
+  and the exact headset-session state were not inspected or modified.
+- The first full test pass found that the recent merge omitted the single-arm
+  home/nullspace entries. Restored their existing effective runtime defaults,
+  preserving saved gains, the owner's feedforward edit, IPs and safety switches.
+- Built the normal `/ws/install` overlay (nine packages, Release, tests enabled)
+  and built the Android debug APK offline. Final results: 215 ROS cases passed
+  (Quest 34, recording 7, safety 48, controllers 65, Hand 42, bringup 19), plus
+  two native TCP/telemetry cases; no failures/errors/skips. The configuration and
+  network checks were rerun after their fixes. Logs in the existing container:
+  `/tmp/launch-trial-fix-build.log`, `/tmp/launch-trial-fix-tests.log` and
+  `/tmp/launch-trial-recheck.log`. No APK installation or physical FCI/Hand/USB
+  operation occurred. Updated runtime/build/protocol documentation and recovery
+  instructions; physical trial acceptance remains an operator action.
+
 ### Exact CBF placement illustrations (2026-10-28)
 
 - Added `scripts/illustrate_cbf_geometry.py`, a robot-free documentation tool

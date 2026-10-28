@@ -116,6 +116,7 @@ bool SafetyCoordinator::process(const std::array<bool, 2>& active, cbf::CbfSafet
   cbf::DualArmState state;
   cbf::Vector14d nominal = cbf::Vector14d::Zero();
   std::array<bool, 2> activity{};
+  std::array<bool, 2> homing_recovery{};
   double period = .001;
   double derivative_period = 0;
   SafetyReply reply;
@@ -148,6 +149,7 @@ bool SafetyCoordinator::process(const std::array<bool, 2>& active, cbf::CbfSafet
       state.arm[i] = p.state;
       nominal.segment<7>(i * 7) = p.nominal;
       activity[i] = p.motion_active;
+      homing_recovery[i] = p.homing_active;
       period = std::min(period, p.period);
       reply.cycles[i] = p.cycle;
       reply.source_ns[i] = p.stamp_ns;
@@ -171,7 +173,7 @@ bool SafetyCoordinator::process(const std::array<bool, 2>& active, cbf::CbfSafet
   reply.nominal = nominal;
   if (limits_.asynchronous && derivative_period > 0)
     period = derivative_period;
-  reply.result = filter.filter(nominal, state, period, activity);
+  reply.result = filter.filter(nominal, state, period, activity, true, homing_recovery);
   for (int i = 0; i < 2; ++i)
     if (active[i])
       last_source_ns_[i] = pending_[i].stamp_ns;
