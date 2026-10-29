@@ -21,8 +21,8 @@ struct NominalTorque {
 };
 
 // All laws produce seven joint torques in Nm, in Panda joint order, with the
-// backend's Coriolis compensation convention. The shared safety layer owns
-// final actuator/CBF bounds. No ROS, allocation, I/O or blocking in these calls.
+// backend's Coriolis compensation convention. The controller runtime owns
+// final actuator magnitude/rate clipping. No ROS, allocation, I/O or blocking in these calls.
 class TorqueController {
  public:
   virtual ~TorqueController() = default;

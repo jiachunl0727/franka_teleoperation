@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "../include/teleop_controllers/franka_model.hpp"
 #include "../src/hardware_startup.hpp"
 
 TEST(HardwareStartup, IdleWithoutErrorsCanRequestControl) {

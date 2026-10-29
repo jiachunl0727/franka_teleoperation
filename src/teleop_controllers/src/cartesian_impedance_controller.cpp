@@ -5,7 +5,8 @@
 
 namespace teleop_controllers {
 bool CartesianImpedanceParameters::valid() const noexcept {
-  for (double value : {lambda_translation, lambda_rotation, gain_translation, gain_rotation})
+  for (double value : {lambda_translation, lambda_rotation, gain_translation, gain_rotation,
+                       cartesian_force_limit, cartesian_moment_limit})
     if (!std::isfinite(value) || value <= 0)
       return false;
   for (double value : {nullspace_stiffness, nullspace_damping, nullspace_joint_limit_gain,
@@ -14,10 +15,10 @@ bool CartesianImpedanceParameters::valid() const noexcept {
       return false;
   for (int j = 0; j < 7; ++j)
     if (!std::isfinite(home_joint_position[j]) ||
-        home_joint_position[j] <= safety_filter::kJointLower[j] ||
-        home_joint_position[j] >= safety_filter::kJointUpper[j] ||
+        home_joint_position[j] <= teleop_controllers::kJointLower[j] ||
+        home_joint_position[j] >= teleop_controllers::kJointUpper[j] ||
         2 * nullspace_joint_limit_margin >=
-            safety_filter::kJointUpper[j] - safety_filter::kJointLower[j])
+            teleop_controllers::kJointUpper[j] - teleop_controllers::kJointLower[j])
       return false;
   return true;
 }
@@ -36,7 +37,15 @@ NominalTorque CartesianImpedanceController::compute(const ArmState& s,
   const Eigen::AngleAxisd angle(rotation);
   error.tail<3>() = target->orientation * (angle.axis() * angle.angle());
   const Vector6 r = s.jacobian * s.dq - target->twist + lambda_.cwiseProduct(error);
-  Vector7 torque = -s.jacobian.transpose() * gain_.cwiseProduct(r) + s.coriolis;
+  Vector6 wrench = -gain_.cwiseProduct(r);
+  if (p_.cartesian_wrench_limits_enabled) {
+    const double force = wrench.head<3>().norm(), moment = wrench.tail<3>().norm();
+    if (force > p_.cartesian_force_limit)
+      wrench.head<3>() *= p_.cartesian_force_limit / force;
+    if (moment > p_.cartesian_moment_limit)
+      wrench.tail<3>() *= p_.cartesian_moment_limit / moment;
+  }
+  Vector7 torque = s.jacobian.transpose() * wrench + s.coriolis;
   if (p_.nullspace_enabled) {
     if (!s.mass.allFinite() || !s.mass.isApprox(s.mass.transpose(), 1e-9))
       return {Vector7::Zero(), StateFault::nonfinite_state};
@@ -58,10 +67,12 @@ NominalTorque CartesianImpedanceController::compute(const ArmState& s,
     Vector7 bias =
         p_.nullspace_stiffness * (p_.home_joint_position - s.q) - p_.nullspace_damping * s.dq;
     for (int j = 0; j < 7; ++j) {
-      const double lo = (safety_filter::kJointLower[j] + p_.nullspace_joint_limit_margin - s.q[j]) /
-                        p_.nullspace_joint_limit_margin;
-      const double hi = (s.q[j] - safety_filter::kJointUpper[j] + p_.nullspace_joint_limit_margin) /
-                        p_.nullspace_joint_limit_margin;
+      const double lo =
+          (teleop_controllers::kJointLower[j] + p_.nullspace_joint_limit_margin - s.q[j]) /
+          p_.nullspace_joint_limit_margin;
+      const double hi =
+          (s.q[j] - teleop_controllers::kJointUpper[j] + p_.nullspace_joint_limit_margin) /
+          p_.nullspace_joint_limit_margin;
       bias[j] +=
           p_.nullspace_joint_limit_gain * (std::clamp(lo, 0.0, 1.0) * std::clamp(lo, 0.0, 1.0) -
                                            std::clamp(hi, 0.0, 1.0) * std::clamp(hi, 0.0, 1.0));

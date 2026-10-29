@@ -18,7 +18,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from std_msgs.msg import String
 from quest_teleop_interfaces.msg import QuestControllerState
-from quest_teleop.configuration import full_topic
+from recording.topics import full_topic
 
 
 class MenuGate:

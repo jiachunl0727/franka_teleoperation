@@ -24,8 +24,9 @@ SCALARS = (
     "requested_twist_valid",
     "cartesian_reference_valid",
     "homing_active",
-    "safety_fallback",
 )
+
+
 def sample_row(msg, origin_ns):
     """Subtract integer clocks BEFORE conversion to seconds; retain absolute uint64s."""
     row = {

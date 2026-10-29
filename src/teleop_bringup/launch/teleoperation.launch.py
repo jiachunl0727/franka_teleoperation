@@ -10,8 +10,13 @@ from launch.actions import (
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
-from quest_teleop.configuration import read_mapping, load_arms, select_arms, launch_bool
-from quest_teleop.runtime_configuration import (
+from teleop_bringup.configuration import (
+    read_mapping,
+    load_arms,
+    select_arms,
+    launch_bool,
+)
+from teleop_bringup.runtime_configuration import (
     PIPELINE_DEFAULTS,
     unified_settings,
     load_runtime,
@@ -48,21 +53,12 @@ def setup(context):
     configured = load_arms(path)
     active = select_arms(configured, pipeline["mode"], pipeline["single_controller"])
     settings = load_runtime(path, configured)
-    # Validate ownership and dual geometry before starting any child (including Hand).
+    # Validate hardware ownership before starting any child (including Hand).
     if pipeline["backend"] == "hardware" and (
         pipeline["start_controller"] or pipeline["start_hand"]
     ):
         if any(not arm.robot_ip for arm in active):
             raise ValueError("hardware needs each selected robot_ip")
-        if pipeline["start_controller"] and pipeline["mode"] == "dual":
-            if any(
-                "world_from_base_xyz_xyzw"
-                not in settings.get("arm_settings", {}).get(a.name, {})
-                for a in active
-            ):
-                raise ValueError(
-                    "hardware dual mode needs both surveyed world_from_base_xyz_xyzw transforms"
-                )
     if pipeline["start_controller"] and pipeline["mock_measured_pose"]:
         raise ValueError(
             "mock_measured_pose requires start_controller:=false to avoid competing pose publishers"
@@ -91,7 +87,7 @@ def setup(context):
         or pipeline["mock_measured_pose"]
     ):
         include(
-            "quest_teleop",
+            "teleop_bringup",
             "quest_teleop.launch.py",
             dict(
                 common,
@@ -103,21 +99,19 @@ def setup(context):
         )
     if pipeline["start_controller"]:
         include(
-            "teleop_controllers",
+            "teleop_bringup",
             "cartesian_impedance_controller.launch.py",
             dict(
                 common,
                 backend=pipeline["backend"],
                 operator_confirm=confirmed,
                 runtime_config=path,
-                safety_config=path,
-                cbf_enabled=pipeline["cbf_enabled"],
                 homing_enabled=pipeline["homing_enabled"],
             ),
         )
     if pipeline["start_hand"]:
         include(
-            "teleop_gripper",
+            "teleop_bringup",
             "gripper.launch.py",
             dict(
                 common,
@@ -128,11 +122,11 @@ def setup(context):
         )
     if pipeline["recording_enabled"]:
         # Check recording schema/topics before any process can be started.
-        from recording.configuration import recording_plan
+        from teleop_bringup.recording_configuration import recording_plan
 
         recording_plan(path, active)
         include(
-            "recording",
+            "teleop_bringup",
             "recording.launch.py",
             dict(
                 common,

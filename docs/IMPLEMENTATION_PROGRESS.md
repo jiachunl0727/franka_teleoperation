@@ -1,19 +1,190 @@
 # Implementation record
 
-Current implementation: separated runtime/manager/torque laws, persistent local
-joint position hold, shared CBF-independent actuator caps, homing, Hand control,
-recording, full-cycle tracking telemetry and MATLAB report tools. The default
-safety path uses an asynchronous CBF worker with
-current-state local verification and braking/holding fallback. See
-[CBF_PANDA.md](CBF_PANDA.md). Optional pose/velocity filtering and
-interpolation are implemented in the mapper and disabled/enabled per arm.
+## Optional controller limits (2026-10-29)
 
+Reference shaping, tracking-error protection and Cartesian wrench caps now have
+independent switches, disabled by default in the runtime and all three controller
+configuration templates. The disabled path passes the mapped pose/twist directly
+to the original impedance law. Controller-owned actuator clipping and existing
+input gates remain; Hand logic is unchanged. Single/dual and per-arm parameter
+routing supports the switches. See [the ownership contract](CONTROLLER_ARCHITECTURE.md).
+
+Verification: controller and bringup builds pass, with 104 fresh robot-free test
+cases passing (67 controller, 37 bringup). Tests cover direct-reference tracking,
+opt-in shaping/protection/effort caps, per-arm routing, and full mock launch flows.
+No physical FCI or Hand operation was performed.
+
+## Current architecture: package independence and CBF removal (2026-10-29)
+
+The previous safety architecture and its active configuration have been removed
+under the user's revised principles. Controller runtimes now own actuator
+clipping and all their utilities; cross-package launch/configuration belongs
+to `teleop_bringup`. Joint-state and table constraints are deferred to a new
+CBF design. See [the current ownership contract](CONTROLLER_ARCHITECTURE.md).
+Verification: all six maintained packages rebuilt with testing enabled; 175
+fresh test cases passed across Quest input, controllers, Hand, recording and
+bringup. Checks used an isolated local ROS domain and mock/loopback backends;
+no physical FCI or Hand operation was performed.
+
+Older entries below are historical and do not describe the active safety path.
+
+
+Current runtime functions are controller selection, reference shaping, local
+joint position hold, actuator clipping, homing, Hand control, recording and
+tracking telemetry. There is no active CBF/QP, geometric guard or safety worker.
 Use the [documentation guide](README.md) for current operating instructions.
-The dated entries below are historical evidence; older paths, test counts and
-descriptions of release behavior do not override the current implementation.
 Physical FCI/device operations remain operator actions.
 
 ## Stages and evidence
+
+
+### Abrupt motion containment and stalled-wrist diagnosis (2026-10-29)
+
+The subsequent hardware trials (controller PIDs 17131 and 17206) invalidate any
+inference of physical wrist tracking from the earlier ideal-model tests below.
+Their logs show nearly stationary wrists despite modeled accelerations around
+7 rad/s², growing position error, proximal speed up to 1.269 rad/s in a saved
+state, and a later `tau_J_range_violation`. No matched tracking bag was recorded.
+See [the incident analysis](MOTION_INCIDENT_20261029.md) for evidence and limits.
+
+- Added a coherent bounded Cartesian reference trajectory, Cartesian wrench
+  saturation, and a uniform modeled acceleration ceiling for every selected
+  nominal law, including hold, damping and homing. Existing saved gains remain.
+- Added independent speed/error/model-disagreement supervision and a protection
+  latch that trigger cycling, reconnects and homing cannot clear. Its bounded
+  braking/hold bypasses cached worker corrections, while final actuator/table
+  constraints remain mandatory with CBF on or off.
+- Reproduced and fixed fallback PD feedback bypassing the braking acceleration
+  setting on light wrists. Added adversarial stalled-wrist simulations using
+  the failed trial's captured inertia, plus actual mock-runtime latch and fault
+  capture tests with both CBF settings.
+- Built and installed `quest_teleop`, `safety_filter` and `teleop_controllers` in
+  the existing container. Fresh case-level XML reports **207 tests, zero failures,
+  errors or skips**: 35 Quest, 66 safety and 106 controller cases. The final
+  controller runtime test file has eight passing cases. CTest wrappers are not
+  additional cases. Evidence is in
+  `log/diagnostics/abrupt_motion_20261029/{protection-build.log,protection-tests.log,protection-runtime-final.log,verification.json}`.
+- Hardware remained stopped; the user confirmed it was secured before binary
+  replacement. No FCI/Hand operation was performed. The final process check
+  found no running arm controller. Physical wrist tracking, model validity and
+  stopping response remain unverified; the new protection refuses continued
+  tracking on persistent disagreement rather than claiming restored wrist use.
+
+
+### Wrist tracking: cached CBF correction ordering (2026-10-29)
+
+- Inspected the latest CBF-enabled controller log (PID 13776). Worker results
+  remained usable and tracking remained enabled, but nominal torque was strongly
+  reduced. The trial has no tracking bag and its console logged only vector
+  norms, so it cannot establish the exact per-joint torque history.
+- Added a deterministic regression using the actual worker and asynchronous
+  owner. A newer feasible command on any of joints 5--7 could be reversed by
+  `worker_safe - worker_nominal` from an older request. All six joint/direction
+  combinations failed before the fix; joint 7 requested +0.01 Nm and received
+  -0.042 Nm. Source-state/age checks did not prevent this command-dependent error.
+- Check and repair current nominal feedback first. Only if that fails, use the
+  worker correction as a separately checked repair direction or verified seed.
+  The additional starting point shares the existing twelve-sweep budget with
+  braking repair. Every accepted torque still passes all current constraints;
+  no callback worker wait, OSQP call or allocation was introduced.
+- Added six attainable Cartesian wrist targets, both directions for each wrist,
+  to the feedback suite. These use saved measured inertia, synthetic dynamics,
+  sampled references and the home-posture preference. They check wrist motion,
+  Cartesian tracking and safety bounds; redundancy does not require a unique
+  joint-motion direction. Added per-wrist position, velocity, nominal torque and
+  commanded torque to non-realtime console diagnostics.
+- Rebuilt and installed `safety_filter` and `teleop_controllers` in the existing
+  container. All 159 fresh cases pass (64 safety, 95 controller), including 30
+  closed-loop trajectories and ROS mock fault/recovery/isolation checks. This
+  fixes the reproduced software defect; physical wrist response remains to be
+  confirmed by an operator trial. Gripper behavior, operator-edited YAML and
+  actuator/CBF limits were preserved. No physical operation was performed.
+
+### Hardware-independent coupled-repair diagnosis (2026-10-28)
+
+- Removed 38 earlier build-log directories and all nine Quest recordings and their
+  companion files at the owner's request. Retained source regression fixtures
+  and diagnostic captures; final cleanup retains only the latest build directory.
+- Following `diagnosing-bugs`, constructed a seeded known-feasible torque test
+  before changing production code. It failed at sample 1 with
+  `local_braking_secondary_constraints_relaxed`, residual 0.089793. Removing
+  load-bearing inputs reduced it to three coupled joints with zero requested
+  and braking torque. An independent feasible witness was accepted immediately;
+  the rejected repair really exceeded an acceleration bound. A rounded minimal
+  regression also failed before the fix. Neither reproduction needed hardware
+  logs or a device connection.
+- Testing hypotheses showed that hundreds of extra Euclidean projection sweeps
+  only moved the failure to another generated case. Acceleration clipping followed
+  by actuator clipping can undo the candidate repair under coupled inertia.
+  Strengthened the existing private seed generator with normalized, fixed-size
+  bounded refinement and a projected-descent escape from a stalled working set.
+  Cheap already-feasible/simple seeds remain the fast path. Full original-row
+  verification remains the sole acceptance test; saved tuning and limits are
+  unchanged. The worker and owner guard share this seed generator.
+- Added 4,000 deterministic single/dual owner cases with feasible witnesses,
+  independent magnitude/slew/acceleration checks and zero-allocation checks.
+  Added minimized-case checks for both owner identities, Coriolis offsets and
+  one-iteration worker recovery, plus deliberately conflicting bounds that must
+  remain fallback. One generated-case run measured median 9.4 us, p99 27.7 us and
+  maximum 134 us for the local guard; this is not a physical realtime bound.
+- The architecture skill produced a temporary visual report covering owner-cycle
+  tests, constraint meaning, launch preflight, Hand mocks, reference generation
+  and experiment-data contracts. Broad interface refactors await the user's
+  candidate selection as required by that skill. Corrected the architecture
+  guide's obsolete statement that the engaged law has no nullspace term.
+- Validation: rebuilt and installed `safety_filter` and `teleop_controllers`;
+  all 152 fresh cases pass (safety 63, controllers 89), with zero failures,
+  errors or skips. This includes saved-model replays, 24 feedback cases and
+  isolated ROS mock fault/recovery tests. Final generated-case timing was
+  median 8.7 us, p99 20.4 us, maximum 30.2 us on this development host.
+  Removed throwaway probes and retained the regression tests and final build log.
+  Physical FCI/Hand/Quest operations remain operator actions. Offline success
+  does not establish a bug-free repository or physical tracking performance.
+
+### Stick-slip trial: acceleration-boundary and worker-certificate correction (2026-10-28)
+
+- Preserved the 18:05 CET arm/mapper/bridge/Hand logs (arm PID 5479;
+  17:05 UTC in the log directory) and 23
+  first-hold models under `log/diagnostics/stick_slip_review_20261028/`.
+  All 23 holds interrupted requested motion: 20 local repair failures at
+  residuals 0.00100006–0.001673, and three `solver_not_verified` results.
+  The earlier 18:03 CET CBF-disabled launch had no logged safety hold.
+- The snapshots identify the acceleration rows as the numerical boundary.
+  Previous torque already implies acceleration at or just beyond ±7 rad/s²,
+  and the actual inertia has much stronger coupling than the old synthetic
+  fixtures. The former line limiter deliberately targeted bound + tolerance,
+  so it spent the entire 0.001 acceptance budget before the next model update.
+- Added a bounded candidate computed in joint acceleration coordinates: clamp
+  the measured torque's modeled acceleration to 99% of the configured limits,
+  map back through M and c, then clamp actuator bounds. Every original active
+  constraint is independently checked; this seed is never assumed safe.
+  Segment limiting now uses the actual bounds, without adding tolerance.
+  Saved limits, controller gains, mapping/filter settings and input gates remain.
+- The worker could also find a fully feasible bounded recovery candidate yet
+  still report iteration failure. A candidate passing every original current
+  coupled row is now a `verified_feasible_seed` result. This is feasibility,
+  not proven tracking optimality. Subsequent QPs warm-start from the verified
+  point with cleared stale dual multipliers. Genuine infeasibility/model faults
+  and stale or wrong-context results retain their braking/holding policy.
+- Retained all 23 snapshots as documented regression fixtures. Original and
+  perturbed-target checks cover worker/local feasibility, acceleration/actuator
+  bounds and zero allocation. The pre-change library fails this regression;
+  the corrected standalone replay passes all saved models. Snapshot replay
+  does not contain the exact cached correction or preceding derivative history.
+  Feedback tests additionally exercise measured inertia coupling from the trial
+  with a 0.5 s operator trajectory sampled at 90 Hz, then held. The earlier
+  synthetic instantaneous-step cases remain. Abrupt steps with the fixed
+  measured-inertia approximation also exposed poor settling/constraint
+  intervention; this correction does not certify arbitrary reference jumps.
+  The added measured-inertia scenarios cover continuous sampled operation,
+  not that stress case. No mapper interpolation/filter was silently enabled.
+- Validation: normal safety/controller overlay rebuilt; all 149 fresh cases
+  pass (safety 60, controllers 89), with zero failures/errors/skips. These include
+  23 standalone model replays with original/perturbed targets, allocation checks
+  and 24 feedback cases. Genuine infeasibility and mock fault/recovery tests
+  still pass. No physical device operations, APK changes, gripper stop changes
+  or saved tuning changes are part of this correction. Physical smoothness
+  remains an operator verification step.
 
 ### Actual-trial feasible-command latch correction (2026-10-28)
 

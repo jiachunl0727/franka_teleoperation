@@ -11,7 +11,7 @@ namespace teleop_controllers {
 // Non-realtime conversion; all ROS strings/messages are constructed here.
 inline quest_teleop_interfaces::msg::TrackingSample tracking_message(
     const TrackingSnapshot& s, const std::string& frame, const builtin_interfaces::msg::Time& stamp,
-    const Vector7& limits, double maximum_rate, bool cbf_enabled, uint64_t drops,
+    const Vector7& limits, double maximum_rate, uint64_t drops,
     const CartesianImpedanceParameters& impedance) {
   quest_teleop_interfaces::msg::TrackingSample msg;
   msg.header.stamp = stamp;
@@ -101,9 +101,6 @@ inline quest_teleop_interfaces::msg::TrackingSample tracking_message(
   msg.maximum_torque_rate = maximum_rate;
   msg.torque_rate_limited = s.control.rate_limited;
   msg.torque_magnitude_limited = s.control.magnitude_limited;
-  msg.cbf_enabled = cbf_enabled;
-  msg.safety_fallback = s.fallback;
-  msg.solver_succeeded = s.solver_succeeded;
   msg.normalized_torque_intervention =
       ((s.control.torque - s.control.nominal).array() / limits.array()).matrix().norm();
   msg.monitor_queue_drops = drops;

@@ -2,14 +2,14 @@
 #pragma once
 #include <optional>
 
-#include "safety_filter/panda_limits.hpp"
 #include "teleop_controllers/joint_motion_generator.hpp"
+#include "teleop_controllers/panda_limits.hpp"
 #include "teleop_controllers/torque_controller.hpp"
 namespace teleop_controllers {
 enum class HomePhase { idle, homing, stopping, succeeded, cancelled, failed };
 const char* home_phase_name(HomePhase phase) noexcept;
 struct HomingParameters {
-  Vector7 home_joint_position{Eigen::Map<const Vector7>(safety_filter::kHome.data())};
+  Vector7 home_joint_position{Eigen::Map<const Vector7>(teleop_controllers::kHome.data())};
   double speed_factor{.15}, velocity_filter_tau{.01};
   double position_tolerance{.01}, velocity_tolerance{.02}, settle_duration{.25};
   double completion_timeout{30}, stop_duration{.5}, stop_acceleration{.75}, stop_timeout{5};
@@ -34,7 +34,7 @@ struct HomingOutput {
 };
 // Independent nominal homing controller. It never owns a socket/FCI session;
 // the controller manager selects exactly one nominal law, then the runtime applies the
-// same actuator and CBF filter to it.
+// same local actuator clipping to it.
 class HomingController final : public TorqueController {
  public:
   explicit HomingController(const HomingParameters& p) : p_(p) {}

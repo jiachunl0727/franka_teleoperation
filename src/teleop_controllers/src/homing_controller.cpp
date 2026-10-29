@@ -25,8 +25,8 @@ const char* home_phase_name(HomePhase phase) noexcept {
 bool HomingParameters::valid() const noexcept {
   for (int j = 0; j < 7; ++j)
     if (!std::isfinite(home_joint_position[j]) ||
-        home_joint_position[j] <= safety_filter::kJointLower[j] ||
-        home_joint_position[j] >= safety_filter::kJointUpper[j])
+        home_joint_position[j] <= teleop_controllers::kJointLower[j] ||
+        home_joint_position[j] >= teleop_controllers::kJointUpper[j])
       return false;
   const double values[] = {speed_factor,       position_tolerance, velocity_tolerance,
                            completion_timeout, stop_duration,      stop_acceleration,
@@ -130,8 +130,8 @@ HomingOutput HomingController::update(const ArmState& s, uint64_t now, double dt
     request_ = false;
     bool within_limits = true;
     for (int j = 0; j < 7; ++j)
-      within_limits &=
-          s.q[j] >= safety_filter::kJointLower[j] && s.q[j] <= safety_filter::kJointUpper[j];
+      within_limits &= s.q[j] >= teleop_controllers::kJointLower[j] &&
+                       s.q[j] <= teleop_controllers::kJointUpper[j];
     if (within_limits) {
       trajectory_.emplace(p_.speed_factor, s.q, p_.home_joint_position);
       desired_q_ = s.q;

@@ -6,7 +6,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from quest_teleop.configuration import load_arms, select_arms, launch_bool
+from teleop_bringup.configuration import load_arms, select_arms, launch_bool
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 
@@ -24,7 +24,7 @@ def setup(context):
 
     actions = [
         include(
-            "quest_teleop",
+            "teleop_bringup",
             "quest_teleop.launch.py",
             dict(
                 arms_config=value("arms_config"),
@@ -39,7 +39,7 @@ def setup(context):
     if launch_bool(value("recording_enabled")):
         actions.append(
             include(
-                "recording",
+                "teleop_bringup",
                 "recording.launch.py",
                 dict(
                     mode="all",
@@ -62,7 +62,7 @@ def setup(context):
 def generate_launch_description():
     defaults = dict(
         arms_config=str(
-            Path(get_package_share_directory("quest_teleop")) / "config/arms.yaml"
+            Path(get_package_share_directory("teleop_bringup")) / "config/arms.yaml"
         ),
         start_bridge="false",
         listen_port="45454",

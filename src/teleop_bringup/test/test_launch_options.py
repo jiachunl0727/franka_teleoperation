@@ -51,7 +51,6 @@ class LaunchOptionsTest(unittest.TestCase):
                 recording_enabled=False,
                 mock_measured_pose=False,
                 homing_enabled=False,
-                cbf_enabled=False,
             )
             switches.update(enabled)
             arms.write_text(
@@ -448,14 +447,14 @@ class StandaloneLaunchTest(unittest.TestCase):
                 port = sock.getsockname()[1]
             cases = [
                 (
-                    "quest_teleop",
+                    "teleop_bringup",
                     "quest_usb_bridge.launch.py",
                     ["listen_port:=" + str(port)],
                     "quest_usb_bridge",
                     prefix,
                 ),
                 (
-                    "quest_teleop",
+                    "teleop_bringup",
                     "pose_mapper.launch.py",
                     [
                         "command_topic:=" + prefix + "/command",
@@ -467,28 +466,28 @@ class StandaloneLaunchTest(unittest.TestCase):
                     prefix,
                 ),
                 (
-                    "teleop_controllers",
+                    "teleop_bringup",
                     "cartesian_impedance_controller.launch.py",
-                    ["cbf_enabled:=false"],
+                    [],
                     "panda_cartesian_impedance_controller",
                     prefix,
                 ),
                 (
-                    "teleop_controllers",
+                    "teleop_bringup",
                     "homing.launch.py",
-                    ["cbf_enabled:=false"],
+                    [],
                     "panda_cartesian_impedance_controller",
                     prefix,
                 ),
                 (
-                    "teleop_gripper",
+                    "teleop_bringup",
                     "gripper.launch.py",
                     [],
                     "franka_hand_worker",
                     prefix,
                 ),
                 (
-                    "recording",
+                    "teleop_bringup",
                     "recording.launch.py",
                     [
                         "recording_namespace:=" + prefix,
@@ -502,7 +501,7 @@ class StandaloneLaunchTest(unittest.TestCase):
                 for index, (package, launch, extra, name, namespace) in enumerate(
                     cases
                 ):
-                    if namespace == prefix and package != "recording":
+                    if namespace == prefix and launch != "recording.launch.py":
                         namespace = prefix + "/case_" + str(index)
                         arms.write_text(
                             yaml.safe_dump(
@@ -519,10 +518,14 @@ class StandaloneLaunchTest(unittest.TestCase):
                         )
                     with self.subTest(package=package, launch=launch):
                         args = ["ros2", "launch", package, launch, *extra]
-                        if package != "quest_teleop":
-                            args.append("arms_config:=" + str(arms))
-                        else:
+                        if launch in (
+                            "quest_teleop.launch.py",
+                            "quest_usb_bridge.launch.py",
+                            "pose_mapper.launch.py",
+                        ):
                             args.append("namespace:=" + namespace)
+                        else:
+                            args.append("arms_config:=" + str(arms))
                         log_path = root / (package + "-" + launch + ".log")
                         with log_path.open("w") as log:
                             proc = subprocess.Popen(
@@ -557,45 +560,7 @@ class StandaloneLaunchTest(unittest.TestCase):
                                     os.killpg(proc.pid, signal.SIGKILL)
                                     proc.wait()
                             self.assertEqual(proc.returncode, 0, log_path.read_text())
-                # A separate safety file must reach the arm owner through the scoped include.
-                safety = root / "safety.yaml"
-                safety.write_text(
-                    yaml.safe_dump(
-                        {"cbf": {"table_height": 2.0, "maximum_failures": 1}}
-                    )
-                )
-                result = subprocess.run(
-                    [
-                        "ros2",
-                        "launch",
-                        "teleop_controllers",
-                        "cartesian_impedance_controller.launch.py",
-                        "arms_config:=" + str(arms),
-                        "safety_config:=" + str(safety),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                )
-                self.assertIn(
-                    "latched CBF stop: solver_failures", result.stdout + result.stderr
-                )
-                # Its standalone entry loads parameters without opening any FCI connection.
-                result = subprocess.run(
-                    [
-                        "ros2",
-                        "launch",
-                        "safety_filter",
-                        "safety_filter.launch.py",
-                        "arms_config:=" + str(arms),
-                        "safety_config:=" + str(safety),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertIn("Loaded safety_filter parameters", result.stdout)
+
             finally:
                 node.destroy_node()
 

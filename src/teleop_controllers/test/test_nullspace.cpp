@@ -6,7 +6,7 @@ namespace ft = teleop_controllers;
 namespace {
 ft::ArmState state() {
   ft::ArmState s;
-  s.q = Eigen::Map<const ft::Vector7>(safety_filter::kHome.data());
+  s.q = Eigen::Map<const ft::Vector7>(teleop_controllers::kHome.data());
   s.q[0] += .3;
   s.q[6] -= .2;
   s.jacobian << 1, 0, 0, 0, 0, 0, .4, 0, 1, 0, 0, 0, 0, .2, 0, 0, 1, 0, 0, 0, -.3, 0, 0, 0, 1, 0, 0,
@@ -76,7 +76,7 @@ TEST(Nullspace, LimitRepulsionAndInvalidMassAreHandled) {
   ft::ArmState s = state();
   s.mass.setIdentity();
   s.jacobian.setZero();
-  s.q[0] = safety_filter::kJointLower[0] + .01;
+  s.q[0] = teleop_controllers::kJointLower[0] + .01;
   ft::CartesianImpedanceParameters p;
   p.home_joint_position = s.q;
   p.nullspace_enabled = true;
@@ -85,6 +85,28 @@ TEST(Nullspace, LimitRepulsionAndInvalidMassAreHandled) {
   EXPECT_GT(law.compute(s, reference(s), .001).torque[0], 0);
   s.mass(0, 0) = -1;
   EXPECT_NE(law.compute(s, reference(s), .001).fault, ft::StateFault::none);
-  p.home_joint_position[0] = safety_filter::kJointLower[0];
+  p.home_joint_position[0] = teleop_controllers::kJointLower[0];
+  EXPECT_FALSE(p.valid());
+}
+
+TEST(CartesianEffort, LargePoseAndVelocityErrorsHaveBoundedWrench) {
+  ft::CartesianImpedanceParameters p;
+  ft::CartesianImpedanceController unlimited(p);
+  EXPECT_FALSE(p.cartesian_wrench_limits_enabled);
+  p.cartesian_wrench_limits_enabled = true;
+  ft::CartesianImpedanceController law(p);
+  ft::ArmState s;
+  s.jacobian.leftCols<6>().setIdentity();
+  auto target = reference(s);
+  target.position.setConstant(10);
+  target.orientation = Eigen::AngleAxisd(2., Eigen::Vector3d::UnitZ());
+  target.twist.setConstant(100.);
+  const auto raw = unlimited.compute(s, target, .001);
+  EXPECT_GT(raw.torque.head<3>().norm(), p.cartesian_force_limit);
+  EXPECT_GT(raw.torque.segment<3>(3).norm(), p.cartesian_moment_limit);
+  const auto out = law.compute(s, target, .001);
+  EXPECT_LE(out.torque.head<3>().norm(), p.cartesian_force_limit + 1e-12);
+  EXPECT_LE(out.torque.segment<3>(3).norm(), p.cartesian_moment_limit + 1e-12);
+  p.cartesian_force_limit = 0;
   EXPECT_FALSE(p.valid());
 }

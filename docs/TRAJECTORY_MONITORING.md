@@ -87,9 +87,9 @@ configured tool/payload. None of these signals is a motor-current measurement.
 
 The existing `robot_state` publisher now also fills `tau_j_d` and `dtau_j`.
 Actuator limits default to 35% of Panda FCI torque/rate ceilings, independently
-of CBF enablement. `torque_limits` and `maximum_torque_rate` record the effective
+of any CBF layer. `torque_limits` and `maximum_torque_rate` record the effective
 bounds after additional controller caps, not merely the YAML's raw caps. See
-[editable actuator settings](CBF_PANDA.md#editable-actuator-limits-including-cbf-disabled-operation).
+[controller-owned actuator settings](CONTROLLER_ARCHITECTURE.md).
 Mock torque readbacks/gravity are NaN with validity false: the mock is a fixed
 fixture and does not simulate robot dynamics, sensors or downstream processing.
 

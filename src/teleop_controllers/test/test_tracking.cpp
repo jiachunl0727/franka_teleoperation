@@ -21,7 +21,7 @@ TEST(Tracking, PreservesFourTorqueStagesAndPreviousCommandWithoutAligningThem) {
   s.gravity.setConstant(10);
   s.previous_commanded.setConstant(2.5);
   const auto m = ft::tracking_message(s, "base", builtin_interfaces::msg::Time{},
-                                      ft::Vector7::Constant(10), 900, true, 5, {});
+                                      ft::Vector7::Constant(10), 900, 5, {});
   EXPECT_DOUBLE_EQ(m.nominal_torque[0], 4);
   EXPECT_DOUBLE_EQ(m.commanded_torque[0], 3);
   EXPECT_DOUBLE_EQ(m.robot_desired_torque[0], 2);
@@ -47,7 +47,7 @@ TEST(Tracking, ComputesMeasuredTwistAndSignInvariantRotationError) {
   s.requested.requested_twist_valid = true;
   s.requested.requested_twist.setConstant(.7);
   const auto first = ft::tracking_message(s, "base", builtin_interfaces::msg::Time{},
-                                          ft::Vector7::Ones(), 900, false, 0, {});
+                                          ft::Vector7::Ones(), 900, 0, {});
   EXPECT_DOUBLE_EQ(first.measured_twist.linear.x, .1);
   EXPECT_DOUBLE_EQ(first.measured_twist.angular.z, .6);
   EXPECT_DOUBLE_EQ(first.requested_twist.linear.x, .7);
@@ -55,14 +55,14 @@ TEST(Tracking, ComputesMeasuredTwistAndSignInvariantRotationError) {
   EXPECT_NEAR(first.rotation_error_angle, .2, 1e-12);
   s.state.orientation.coeffs() *= -1;
   const auto second = ft::tracking_message(s, "base", builtin_interfaces::msg::Time{},
-                                           ft::Vector7::Ones(), 900, false, 0, {});
+                                           ft::Vector7::Ones(), 900, 0, {});
   EXPECT_NEAR(first.rotation_error_angle, second.rotation_error_angle, 1e-12);
 }
 
 TEST(Tracking, MockAndInactiveSignalsAreExplicitlyUnavailable) {
   ft::TrackingSnapshot s;
   const auto m = ft::tracking_message(s, "base", builtin_interfaces::msg::Time{},
-                                      ft::Vector7::Ones(), 900, false, 0, {});
+                                      ft::Vector7::Ones(), 900, 0, {});
   EXPECT_FALSE(m.robot_torque_valid);
   EXPECT_FALSE(m.gravity_valid);
   EXPECT_FALSE(m.previous_command_valid);

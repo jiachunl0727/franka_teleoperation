@@ -20,12 +20,11 @@ topics=(
   "$namespace/cartesian_teleop_command"
   "$namespace/teleop_anchor_pose"
   "$namespace/controller_status"
-  "$namespace/cbf_status"
   "$namespace/homing_status"
   "$namespace/gripper_events"
 )
-types=(QuestControllerState CartesianTeleopCommand PoseStamped ControllerStatus CbfStatus HomingStatus GripperStatus)
-names=(right-input mapped-command measured-pose controller-status cbf-status homing-status gripper-events)
+types=(QuestControllerState CartesianTeleopCommand PoseStamped ControllerStatus HomingStatus GripperStatus)
+names=(right-input mapped-command measured-pose controller-status homing-status gripper-events)
 pids=()
 {
   printf 'namespace=%s\nduration_seconds=%s\n' "$namespace" "$duration"

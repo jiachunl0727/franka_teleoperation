@@ -10,12 +10,12 @@ Docker commands run on the host PC. The host repository is mounted at `/ws`.
 | Understand trigger release, homing, Hand behavior or startup errors | [Runtime guide](TELEOPERATION_RUNTIME.md) |
 | Check mapping without a robot; calibrate the coordinate basis | [Robot-free mapping](ROBOT_FREE_MAPPING.md) |
 | Plot live data, record an experiment or create MATLAB reports | [Trajectory monitoring](TRAJECTORY_MONITORING.md) |
-| Change torque caps or understand CBF constraints and timing | [Panda safety filter](CBF_PANDA.md) |
+| Change torque caps or understand controller ownership | [Controller ownership and torque clipping](CONTROLLER_ARCHITECTURE.md) |
 | Format code, build and run tests | [Development guide](DEVELOPMENT.md) |
 | Understand USB messages and timestamps | [Quest USB protocol](quest-usb-protocol.md) |
 | Understand the native headset application | [Quest app](VR_APP_PORT.md) |
 | Review implemented features and validation limits | [Implementation record](IMPLEMENTATION_PROGRESS.md) |
-| Review proposed asynchronous CBF and reference smoothing work | [Milestone 2 plan](MILESTONE_2.md) |
+| Review the current architecture and deferred CBF work | [Current architecture](CONTROLLER_ARCHITECTURE.md) |
 
 The combined-launch configuration files are
 [`single_panda.yaml`](../src/teleop_bringup/config/single_panda.yaml) and
@@ -25,10 +25,9 @@ the single-arm file may already select hardware. Package-local YAML files apply
 to standalone launches.
 
 Current behavior includes joint position holding after normal trigger release,
-35% default actuator caps even with CBF disabled, full-cycle tracking telemetry,
-and MATLAB reports with explicit legends. The CBF owner still waits for the
-current cycle's result. Asynchronous result reuse and pose interpolation remain
-planned features.
+controller-owned actuator clipping and full-cycle tracking telemetry.
+The former CBF layer is removed; see the current architecture for protection
+scope and launch ownership.
 
 `IMPLEMENTATION_PROGRESS.md` records earlier stages as history. Its older paths,
 test counts and behavior descriptions are not current operating instructions.

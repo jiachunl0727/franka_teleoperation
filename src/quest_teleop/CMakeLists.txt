@@ -19,14 +19,11 @@ ament_target_dependencies(quest_usb_bridge rclcpp quest_teleop_interfaces)
 target_link_libraries(quest_usb_bridge nlohmann_json::nlohmann_json)
 
 install(TARGETS quest_usb_bridge DESTINATION lib/${PROJECT_NAME})
-install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_pose_mapper test/test_pose_mapper.py)
   ament_add_pytest_test(test_bridge_mapper_integration test/test_bridge_mapper_integration.py TIMEOUT 60)
-  ament_add_pytest_test(test_configuration test/test_configuration.py)
-  ament_add_pytest_test(test_runtime_configuration test/test_runtime_configuration.py)
 endif()
 
 ament_package()

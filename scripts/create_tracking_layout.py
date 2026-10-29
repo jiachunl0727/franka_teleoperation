@@ -125,12 +125,11 @@ def layout(namespaces):
                         curves(["normalized_torque_intervention"]),
                     ),
                     (
-                        "Torque rate / magnitude / fallback",
+                        "Torque rate / magnitude",
                         curves(
                             [
                                 "torque_rate_limited",
                                 "torque_magnitude_limited",
-                                "safety_fallback",
                             ]
                         ),
                     ),

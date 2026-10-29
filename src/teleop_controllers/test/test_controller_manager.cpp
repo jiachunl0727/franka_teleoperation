@@ -5,14 +5,14 @@
 #include <limits>
 #include <thread>
 
-#include "safety_filter/handoff.hpp"
 #include "teleop_controllers/cartesian_impedance_controller.hpp"
 #include "teleop_controllers/controller_manager.hpp"
 #include "teleop_controllers/damping_controller.hpp"
+#include "teleop_controllers/handoff.hpp"
 #include "teleop_controllers/orientation_only_controller.hpp"
 #include "teleop_controllers/position_hold_controller.hpp"
 namespace ft = teleop_controllers;
-namespace sf = safety_filter;
+namespace local = teleop_controllers;
 namespace {
 constexpr uint64_t now = 1000000000;
 ft::Command command(uint64_t seq, bool enabled, bool released = false) {
@@ -59,7 +59,7 @@ TEST(Manager, OrientationModeCapturesPositionAndSwitchesWithoutTriggerRelease) {
   auto full = command(3, true);
   full.position.x() = .45;
   core.accept(full, now + 3);
-  EXPECT_EQ(core.update(measured, now + 3, .001).target_position.x(), .45);
+  EXPECT_DOUBLE_EQ(core.update(measured, now + 3, .001).target_position.x(), .45);
 
   auto orientation = command(4, true);
   orientation.orientation_only = true;
@@ -91,10 +91,23 @@ TEST(Manager, ReleaseIsRequiredAndNominalLawIsPreserved) {
   s.coriolis[0] = .5;
   const auto out = core.update(s, now + 3, .001);
   ASSERT_TRUE(out.motion_enabled);
-  // -20 * (.02 - .1 + 50 * -.01) + .5 = 12.1
+  EXPECT_DOUBLE_EQ(out.desired_twist.x(), .1);
+  EXPECT_NEAR(out.target_position.x(), .41, 1e-12);
+  // With optional limits off, the original impedance law sees the mapped input.
   EXPECT_NEAR(out.nominal[0], 12.1, 1e-10);
-  // The manager exposes the unbounded nominal; only the runtime fills final torque.
+  // Only the runtime fills the final actuator-clipped torque.
   EXPECT_TRUE(out.torque.isZero());
+}
+TEST(Manager, SmallPoseWithImplausibleVelocityCannotDriveTheArm) {
+  Fixture core;
+  arm(core);
+  auto c = command(3, true);
+  c.position.x() += .005;
+  c.twist.tail<3>().setConstant(100.);
+  core.accept(c, now + 3);
+  const auto out = core.update(state(), now + 3, .001);
+  EXPECT_FALSE(out.motion_enabled);
+  EXPECT_TRUE(out.desired_twist.isZero());
 }
 TEST(Manager, StaleTargetIsRemovedAndPacketsCannotResume) {
   Fixture core(ft::ManagerParameters{});
@@ -181,7 +194,7 @@ TEST(Manager, OuterEnvelopeAndNonFiniteTargetsDisarm) {
     EXPECT_EQ(out.desired_twist, ft::Vector6::Zero());
   }
 }
-TEST(Manager, NominalIsUnboundedButInvalidActuatorIntersectionIsFatal) {
+TEST(Manager, CoriolisConventionIsPreservedButInvalidActuatorIntersectionIsFatal) {
   Fixture core(ft::ManagerParameters{});
   arm(core);
   auto s = state();
@@ -224,18 +237,18 @@ TEST(Manager, ParametersRejectUnapprovedCeilingChangesAndNaNs) {
   gains.lambda_rotation = std::numeric_limits<double>::quiet_NaN();
   EXPECT_FALSE(gains.valid());
 }
-TEST(Manager, NonFiniteNominalReportsDisarmedBeforeTermination) {
+TEST(Manager, OverflowSizedFiniteVelocityIsRejectedBeforeComputingNominal) {
   Fixture core(ft::ManagerParameters{});
   arm(core);
   auto c = command(3, true);
   c.twist[0] = 1e308;
   core.accept(c, now + 3);
   const auto out = core.update(state(), now + 3, .001);
-  EXPECT_EQ(out.reason, ft::Reason::invalid_state);
+  EXPECT_EQ(out.reason, ft::Reason::input_velocity_limit);
   EXPECT_FALSE(out.motion_enabled);
 }
 TEST(Handoff, QueueIsBoundedAndPreservesOrder) {
-  sf::SpscQueue<int, 4> queue;
+  local::SpscQueue<int, 4> queue;
   ASSERT_TRUE(queue.push(1));
   ASSERT_TRUE(queue.push(2));
   ASSERT_TRUE(queue.push(3));
@@ -249,7 +262,7 @@ TEST(Handoff, QueueIsBoundedAndPreservesOrder) {
 }
 TEST(Handoff, ConcurrentSamplesRemainAtomic) {
   using Sample = std::array<uint64_t, 16>;
-  sf::LatestSnapshot<Sample> snapshot;
+  local::LatestSnapshot<Sample> snapshot;
   std::atomic<bool> done{false};
   std::thread producer([&] {
     for (uint64_t n = 1; n <= 100000; ++n) {
@@ -339,7 +352,7 @@ TEST(Manager, InjectedLawRunsOnlyWhenArmedAndResetsOnActivation) {
   EXPECT_EQ(law.resets, 1);
   manager.update(s, now + 3, .001);
   EXPECT_EQ(law.resets, 1);
-  manager.safety_fallback();
+  manager.fault(ft::Reason::invalid_command);
   EXPECT_FALSE(manager.update(s, now + 4, .001).control.motion_enabled);
   EXPECT_EQ(law.calls, 2);
   manager.accept(command(3, true), now + 5);
@@ -361,7 +374,7 @@ TEST(Manager, HomingOwnsNominalUntilControlledStopAndRequiresFreshReengagement) 
   ft::PositionHoldController hold({});
   ft::ControllerManager manager({}, {}, law, hold, damping);
   auto s = state();
-  s.q = Eigen::Map<const ft::Vector7>(safety_filter::kHome.data());
+  s.q = Eigen::Map<const ft::Vector7>(teleop_controllers::kHome.data());
   s.q[0] += .2;
   uint64_t stamp = now, sequence = 0;
   auto home_input = [&](bool button, bool trigger_released = true) {
@@ -525,8 +538,6 @@ TEST(Manager, InputFaultsPreserveTheHoldAndFreshReleaseCannotRecaptureIt) {
   core.manager.fault(ft::Reason::invalid_command);
   core.manager.fault(ft::Reason::homing);  // Arbitration cannot erase the fault gate.
   EXPECT_FALSE(core.update(s, c.source_ns + 1, .001).position_hold_active);
-  core.manager.safety_fallback();
-  EXPECT_FALSE(core.update(s, c.source_ns + 1, .001).position_hold_active);
   core.manager.shutdown();
   EXPECT_FALSE(core.update(s, c.source_ns + 2, .001).position_hold_active);
 }
@@ -646,7 +657,7 @@ TEST(Manager, StartupSessionAndQueueFaultsCannotMoveTheLocalHoldAnchor) {
   manager.accept(command(1, true), now + 1);  // Startup-held trigger is not permission.
   EXPECT_FALSE(manager.update(s, now + 1, .001).control.motion_enabled);
   EXPECT_EQ(hold.resets, 1);
-  manager.safety_fallback();
+  manager.shutdown();
   EXPECT_FALSE(manager.update(s, now + 2, .001).control.position_hold_active);
 }
 TEST(Manager, PausedHoldSurvivesTrackingFaultAndStalenessWithoutRecapture) {
@@ -667,4 +678,123 @@ TEST(Manager, PausedHoldSurvivesTrackingFaultAndStalenessWithoutRecapture) {
     EXPECT_FALSE(out.motion_enabled);
   }
   EXPECT_NEAR(f.update(s, now + 500000000, .001).nominal[6], -1.5, 1e-10);
+}
+
+TEST(Manager, ReferenceSpeedAccelerationAndTwistStayCoherentAcrossReversals) {
+  ft::ManagerParameters limits;
+  limits.reference_shaping_enabled = true;
+  Fixture f(limits);
+  arm(f);
+  auto measured = state();
+  auto previous = f.update(measured, now + 2, .001);
+  for (int i = 1; i <= 1000; ++i) {
+    const uint64_t stamp = now + 2 + i * 1000000ULL;
+    auto c = command(i + 2, true);
+    c.source_ns = c.receipt_ns = stamp;
+    c.position.x() += i < 500 ? .02 : -.02;
+    c.orientation = Eigen::AngleAxisd(i < 500 ? .1 : -.1, Eigen::Vector3d::UnitZ());
+    c.twist.x() = i < 500 ? .2 : -.2;
+    f.accept(c, stamp);
+    const auto out = f.update(measured, stamp, .001);
+    ASSERT_TRUE(out.motion_enabled) << i;
+    EXPECT_LE(out.desired_twist.head<3>().norm(), limits.reference_linear_speed + 1e-12);
+    EXPECT_LE(out.desired_twist.tail<3>().norm(), limits.reference_angular_speed + 1e-12);
+    EXPECT_LE((out.desired_twist.head<3>() - previous.desired_twist.head<3>()).norm(),
+              limits.reference_linear_acceleration * .001 + 1e-12);
+    EXPECT_LE((out.desired_twist.tail<3>() - previous.desired_twist.tail<3>()).norm(),
+              limits.reference_angular_acceleration * .001 + 1e-12);
+    EXPECT_TRUE(((out.target_position - previous.target_position) / .001)
+                    .isApprox(out.desired_twist.head<3>(), 1e-7));
+    Eigen::AngleAxisd delta(out.target_orientation * previous.target_orientation.conjugate());
+    EXPECT_LT((delta.axis() * delta.angle() / .001 - out.desired_twist.tail<3>()).norm(), 1e-9);
+    measured.position = out.target_position;
+    measured.orientation = out.target_orientation;
+    previous = out;
+  }
+}
+
+TEST(Manager, ImmobilePlantCannotWindUpAReferenceWithoutLimit) {
+  ft::ManagerParameters p;
+  p.reference_shaping_enabled = p.tracking_protection_enabled = true;
+  Fixture f(p);
+  arm(f);
+  auto measured = state();
+  bool stopped = false;
+  for (int i = 1; i <= 2000; ++i) {
+    const auto stamp = now + i * 1000000ULL;
+    auto c = command(i + 2, true);
+    c.source_ns = c.receipt_ns = stamp;
+    c.position.x() += .1;
+    f.accept(c, stamp);
+    const auto out = f.update(measured, stamp, .001);
+    if (out.protective_stop) {
+      EXPECT_EQ(out.reason, ft::Reason::tracking_limit);
+      stopped = true;
+      break;
+    }
+    EXPECT_LT((out.target_position - measured.position).norm(), .03);
+  }
+  EXPECT_TRUE(stopped);
+}
+
+TEST(Manager, OptionalLimitsDefaultOffAndMappedReferencePassesThrough) {
+  const ft::ManagerParameters p;
+  EXPECT_FALSE(p.reference_shaping_enabled);
+  EXPECT_FALSE(p.tracking_protection_enabled);
+  Fixture f(p);
+  arm(f);
+  const auto measured = state();
+  for (int i = 1; i <= 600; ++i) {
+    auto c = command(i + 2, true);
+    c.source_ns = c.receipt_ns = now + i * 1000000ULL;
+    c.position.x() += .1;
+    c.orientation = Eigen::AngleAxisd(.5, Eigen::Vector3d::UnitZ());
+    c.twist << .4, 0, 0, 0, 0, 2.;
+    f.accept(c, c.receipt_ns);
+    const auto out = f.update(measured, c.receipt_ns, .001);
+    ASSERT_TRUE(out.motion_enabled);
+    EXPECT_FALSE(out.protective_stop);
+    EXPECT_TRUE(out.target_position.isApprox(c.position));
+    EXPECT_TRUE(out.target_orientation.isApprox(c.orientation));
+    EXPECT_TRUE(out.desired_twist.isApprox(c.twist));
+    EXPECT_GT(out.nominal.head<3>().norm(), 10.);
+    EXPECT_GT(out.nominal.segment<3>(3).norm(), 1.5);
+  }
+}
+
+TEST(Manager, TrackingProtectionCanBeEnabledWithoutReferenceShaping) {
+  for (int scenario = 0; scenario < 3; ++scenario) {
+    SCOPED_TRACE(scenario);
+    ft::ManagerParameters p;
+    p.tracking_protection_enabled = true;
+    Fixture f(p);
+    arm(f);
+    bool stopped = false;
+    for (int i = 1; i <= 300; ++i) {
+      auto c = command(i + 2, true);
+      c.source_ns = c.receipt_ns = now + i * 1000000ULL;
+      if (scenario == 0)
+        c.position.x() += .04;
+      else if (scenario == 1)
+        c.orientation = Eigen::AngleAxisd(.3, Eigen::Vector3d::UnitZ());
+      else
+        c.position.x() += .02;  // More than half the threshold for 250 ms.
+      f.accept(c, c.receipt_ns);
+      const auto out = f.update(state(), c.receipt_ns, .001);
+      if (out.protective_stop) {
+        EXPECT_EQ(out.reason, ft::Reason::tracking_limit);
+        EXPECT_FALSE(out.motion_enabled);
+        if (scenario == 2) {
+          EXPECT_GE(i, 250);
+          EXPECT_LE(i, 251);
+        } else {
+          EXPECT_EQ(i, 1);
+        }
+        stopped = true;
+        break;
+      }
+      ASSERT_TRUE(out.motion_enabled);
+    }
+    EXPECT_TRUE(stopped);
+  }
 }

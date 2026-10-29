@@ -11,7 +11,6 @@ pipeline:
   start_controller: true
   start_hand: true           # One empty-hand calibration moves the fingers.
   homing_enabled: true
-  cbf_enabled: true
   recording_enabled: true
   mock_measured_pose: false  # Requires start_controller: false.
   # operator_confirm is deliberately launch-only; hardware needs explicit true.
@@ -49,7 +48,7 @@ arms:
     pose_filter: none
     velocity_filter: low_pass
     pose_filter_cutoff_hz: 10.0
-    velocity_filter_cutoff_hz: 10.0
+    velocity_filter_cutoff_hz: 5.0
     # Interpolation: none, ptp_polynomial (septic), spline (quintic).
     pose_interpolation: none
     velocity_interpolation: none
@@ -64,6 +63,9 @@ arms:
     trigger_release: 0.25
 
 controller:
+  # Local post-controller clipping.
+  torque_limit_scale: 0.35
+  torque_rate_limit_scale: 0.35
   # Explicit values matching the runtime defaults, shared by homing and posture control.
   home_joint_position: [0.0, -0.7854, 0.0, -2.3562, 0.0, 1.5708, 0.7854]
   nullspace_enabled: true
@@ -73,6 +75,19 @@ controller:
   nullspace_joint_limit_margin: 0.35  # rad
   nullspace_max_torque: 5.0         # Nm
   nullspace_ramp_seconds: 0.25
+  # Optional controller limits, independent of CBF. Disabled by default.
+  reference_shaping_enabled: false
+  tracking_protection_enabled: false
+  cartesian_wrench_limits_enabled: false
+  # These positive values apply only when their corresponding switch is enabled.
+  reference_linear_speed: 0.05
+  reference_angular_speed: 0.15
+  reference_linear_acceleration: 0.15
+  reference_angular_acceleration: 0.5
+  tracking_position_limit: 0.03
+  tracking_orientation_limit: 0.2
+  cartesian_force_limit: 10.0
+  cartesian_moment_limit: 1.5
   lambda_translation: 15.0
   lambda_rotation: 15.0
   gain_translation: 50.0
@@ -100,8 +115,8 @@ hand:
   joystick_engage: 0.4
   joystick_neutral: 0.2
   close_width_m: 0.0
-  cable_diameter_m: 0.005             # Expected cable gap; edit for the actual cable.
-  cable_diameter_tolerance_m: 0.002   # Acceptable compressed gap +/- this value.
+  cable_diameter_m: 0.010             # Expected cable gap; edit for the actual cable.
+  cable_diameter_tolerance_m: 0.0099   # Acceptable compressed gap +/- this value.
   grasp_force_n: 30.0                # REQUIRED: set a positive force in N; -1 disables closing.
   worker_poll_ms: 1.0
   open_speed_mps: 0.07
@@ -110,40 +125,6 @@ hand:
   command_timeout_ms: 100.0
   max_clock_uncertainty_ms: 10.0
   mock_operation_duration_ms: 100.0
-
-cbf:
-  # Background QP; each callback verifies/repairs locally and never waits for it.
-  execution: asynchronous
-  worker_period_ms: 5.0
-  maximum_result_age_ms: 50.0
-  maximum_worker_state_age_ms: 20.0
-  maximum_peer_age_ms: 10.0
-  maximum_worker_skew_ms: 5.0
-  recovery_dwell_ms: 100.0
-  model_grace_ms: 3.0
-  braking_acceleration: 2.0       # rad/s^2, desired fallback joint deceleration
-  fallback_hold_stiffness: 120.0  # Nm/rad
-  fallback_hold_damping: 22.0     # Nm s/rad
-  guard_clearance_reserve: 0.005  # m, additional local-model reserve
-  peer_motion_bound_mps: 22.0     # m/s, displacement reserve for peer-state age
-  # Active only when the overall CBF is enabled; thresholds need commissioning.
-  singularity_enabled: true
-  singularity_minimum_manipulability: 0.05  # sqrt(det(Js Js^T)), dimensionless
-  singularity_characteristic_length: 0.3   # m; Js linear rows = J_linear / length
-  singularity_cbf_frequency: 8.0           # s^-1, critically damped barrier
-  # Actuator scales apply even with cbf_enabled:false. Controller caps can tighten them.
-  torque_limit_scale: 0.35       # -> joints 1-4: 30.45 Nm; joints 5-7: 4.2 Nm
-  torque_rate_limit_scale: 0.35  # -> 350 Nm/s; restart bringup after editing
-  # Mandatory shared world-z plane, active even when the optional CBF is off.
-  table_height: 0.0
-  table_minimum_clearance: 0.02
-  self_minimum_clearance: 0.03
-  maximum_failures: 20
-  obstacle_centers: []      # Flat [x,y,z,...] in surveyed world coordinates.
-  obstacle_radii: []       # One radius per sphere; empty disables obstacles.
-
-# The single-arm world defaults to its base frame. If a surveyed external
-# world is needed, add arm_settings.panda_1.world_from_base_xyz_xyzw.
 
 recording:
   mode: menu               # menu or continuous

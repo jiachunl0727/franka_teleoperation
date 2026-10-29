@@ -16,7 +16,7 @@ struct TrackingSnapshot {
   uint64_t cycle{0}, state_ns{0}, control_ns{0}, issued_ns{0};
   uint64_t previous_cycle{0}, previous_issued_ns{0};
   double period{0};
-  bool hardware{false}, fallback{false}, solver_succeeded{false};
+  bool hardware{false};
 };
 
 inline Eigen::Vector3d rotation_error(const Eigen::Quaterniond& measured,

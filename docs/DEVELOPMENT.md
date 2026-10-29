@@ -39,7 +39,7 @@ In the same container shell:
 ```bash
 export ROS_DOMAIN_ID=137 ROS_LOCALHOST_ONLY=1
 colcon test --base-paths src --executor sequential \
-  --packages-select quest_teleop recording safety_filter teleop_controllers teleop_gripper teleop_bringup \
+  --packages-select quest_teleop recording teleop_controllers teleop_gripper teleop_bringup \
   --event-handlers console_direct+ --return-code-on-test-failure
 colcon test-result --test-result-base build --verbose
 ```
@@ -47,10 +47,20 @@ colcon test-result --test-result-base build --verbose
 These tests use synthetic input, mock backends and temporary recordings. The
 isolated domain keeps their publishers separate from a running operator session.
 They cover mapping, command gates, torque laws, hold transitions, homing, Hand
-decisions, safety/coordinator behavior, launch configuration and CSV export.
+decisions, local actuator clipping, package independence, launch configuration and CSV export.
 Mocks do not establish physical tracking performance, grasp quality, collision
 clearance or worst-case realtime timing. Test MATLAB separately in a licensed
 session using the [monitoring guide](TRAJECTORY_MONITORING.md).
+
+For focused controller clipping and utility checks:
+
+```bash
+build/teleop_controllers/test_local_utilities --gtest_color=no
+```
+
+There is no CBF package to build. All launch files are installed by
+`teleop_bringup`; feature runtimes are independently linked. See
+[CONTROLLER_ARCHITECTURE.md](CONTROLLER_ARCHITECTURE.md).
 
 ## Keep formatting consistent
 

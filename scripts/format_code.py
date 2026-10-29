@@ -12,7 +12,6 @@ PACKAGES = (
     "quest_teleop",
     "quest_teleop_interfaces",
     "recording",
-    "safety_filter",
     "teleop_bringup",
     "teleop_controllers",
     "teleop_gripper",

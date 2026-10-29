@@ -44,8 +44,9 @@ enum class Reason : uint8_t {
   invalid_state,
   shutdown,
   homing,
-  safety_filter,
-  position_hold
+  position_hold,
+  tracking_limit,
+  input_velocity_limit
 };
 const char* reason_name(Reason reason) noexcept;
 
@@ -62,7 +63,7 @@ const char* state_fault_name(StateFault fault) noexcept;
 
 struct Output {
   Vector7 nominal{Vector7::Zero()};
-  // Filled only by the runtime after the shared safety coordinator accepts this cycle.
+  // Filled by the local runtime after torque magnitude/rate clipping.
   Vector7 torque{Vector7::Zero()};
   Eigen::Vector3d target_position{Eigen::Vector3d::Zero()};
   Eigen::Quaterniond target_orientation{1, 0, 0, 0};
@@ -72,6 +73,7 @@ struct Output {
   StateFault state_fault{StateFault::none};
   bool motion_enabled{false}, rate_limited{false}, magnitude_limited{false};
   bool position_hold_active{false};
+  bool protective_stop{false};  // Latched until the controller is restarted.
 };
 
 }  // namespace teleop_controllers

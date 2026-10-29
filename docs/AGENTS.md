@@ -1,5 +1,32 @@
 # Teleoperation implementation policy
 
+## Optional controller limits override (2026-10-29)
+
+The user requests optional reference speed/acceleration shaping, tracking-error
+protection and Cartesian force/moment caps. Use independent boolean switches,
+disabled by default in the runtime and saved single/dual/standalone YAMLs.
+Disabling shaping sends the mapped pose/twist directly to the nominal law;
+disabling tracking protection removes its error-triggered stop. Torque magnitude
+and slew clipping remain controller-owned and active. Preserve Hand logic.
+
+## Package independence and CBF removal override (2026-10-29)
+
+The user's latest implementation principles supersede the older CBF/table
+policies below. Remove active CBF implementation, solver dependencies, messages,
+settings and launch switches. All torque magnitude/rate clipping is owned by
+`teleop_controllers` and applies without any safety package. Joint-state
+position/velocity/acceleration constraints are deferred to a new CBF design.
+Table-height constraints belong to that future layer and are active only when
+it is enabled; no table guard is mandatory while CBF is absent/disabled.
+
+Feature runtimes own their functionality and utilities. Cross-project launch
+and configuration orchestration belongs exclusively to `teleop_bringup`.
+Shared message definitions and external ROS/Eigen/libfranka dependencies remain.
+Do not restore the removed coordinator, cached correction, repair or fallback
+architecture. Preserve controller/Hand behavior and saved non-CBF operator
+settings. No physical FCI or Hand operation is authorized by this cleanup.
+
+
 ## Asynchronous single/dual safety and mandatory world-table override (2026-10-27)
 
 The owner reports frequent hardware CBF deadline stops and now authorizes
@@ -183,7 +210,7 @@ The operator accepted Milestone 1 after successful single-arm hardware
 teleoperation with CBF disabled. Next implement asynchronous CBF-QP for
 single-arm experiments first, plus controller performance measurement,
 smooth reference generation and distinct controller structures for comparison.
-See [MILESTONE_2.md](MILESTONE_2.md) for the design and acceptance criteria.
+See [historical milestone](incidents/2026-10-29/previous_milestone_2.md) for the design and acceptance criteria.
 Preserve the working nominal controller as the selectable baseline; the new
 request authorizes additional controller structures despite older instructions
 below to preserve only that law. Keep dual-arm execution unchanged in the first

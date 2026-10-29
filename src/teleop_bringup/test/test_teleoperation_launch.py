@@ -23,7 +23,6 @@ from quest_teleop_interfaces.msg import (
     QuestControllerState,
     QuestButtonState,
     GripperStatus,
-    CbfStatus,
     TrackingSample,
     CartesianTeleopCommand,
 )
@@ -43,10 +42,10 @@ class TeleoperationLaunchTest(unittest.TestCase):
         mode="single",
         side="right",
         record=False,
-        cbf_enabled=True,
         torque_scale=0.35,
         torque_rate_scale=0.35,
         hands=False,
+        optional_controls=False,
     ):
         prefix = "/launch_" + uuid.uuid4().hex
         node = Node("test_" + uuid.uuid4().hex)
@@ -55,10 +54,7 @@ class TeleoperationLaunchTest(unittest.TestCase):
         poses = {s: [] for s in statuses}
         tracking = {s: [] for s in statuses}
         commands = {s: [] for s in statuses}
-        cbf_statuses = []
-        node.create_subscription(
-            CbfStatus, prefix + "/" + side + "/cbf_status", cbf_statuses.append, 100
-        )
+
         raw = {
             s: node.create_publisher(
                 QuestControllerState, prefix + "/" + s + "/raw", 10
@@ -153,9 +149,11 @@ class TeleoperationLaunchTest(unittest.TestCase):
                 single_controller=side,
                 start_hand=record or hands,
                 recording_enabled=record,
-                cbf_enabled=cbf_enabled,
             )
-            combined["cbf"].update(
+            combined["controller"].update(
+                reference_shaping_enabled=optional_controls,
+                tracking_protection_enabled=optional_controls,
+                cartesian_wrench_limits_enabled=optional_controls,
                 torque_limit_scale=torque_scale,
                 torque_rate_limit_scale=torque_rate_scale,
             )
@@ -356,22 +354,6 @@ class TeleoperationLaunchTest(unittest.TestCase):
                             tracking[s][-1].maximum_torque_rate,
                             1000 * torque_rate_scale,
                         )
-                    if not cbf_enabled:
-                        wait(
-                            lambda: bool(cbf_statuses),
-                            send=True,
-                            trigger=0.8,
-                            menu=record,
-                        )
-                        self.assertTrue(
-                            all(
-                                s.mandatory_table_guard_enabled
-                                and s.execution == "asynchronous"
-                                and s.solver_succeeded
-                                and not s.fallback_active
-                                for s in cbf_statuses
-                            )
-                        )
                     if mode == "single":
                         other = "left" if side == "right" else "right"
                         self.assertFalse(statuses[other])
@@ -491,8 +473,10 @@ class TeleoperationLaunchTest(unittest.TestCase):
                                 ],
                                 0,
                             )
-                        # Home between episodes, then retain the full clutch
-                        # reference through sustained translation and rotation.
+                        # Home between episodes, then retain the full mapper
+                        # reference through translation and rotation. The mock
+                        # plant is fixed: only explicitly enabled tracking
+                        # protection should latch as the reference moves away.
                         drive(1.1, home="right")
                         drive(0.05)
                         wait(lambda: homes["right"][-1].phase == "succeeded", send=True)
@@ -510,11 +494,19 @@ class TeleoperationLaunchTest(unittest.TestCase):
                         )
                         samples = statuses["right"][first:]
                         self.assertGreater(len(samples), 20)
-                        self.assertGreater(
-                            sum(s.motion_enabled for s in samples),
-                            0.8 * len(samples),
-                            log_path.read_text(),
-                        )
+                        if optional_controls:
+                            self.assertTrue(any(s.motion_enabled for s in samples))
+                            self.assertEqual(
+                                samples[-1].reason,
+                                "protective_tracking_limit",
+                                log_path.read_text(),
+                            )
+                            self.assertFalse(samples[-1].motion_enabled)
+                        else:
+                            self.assertTrue(
+                                all(s.motion_enabled for s in samples),
+                                log_path.read_text(),
+                            )
                         # A fresh Menu press after homing starts a second unique
                         # episode; launch shutdown must finalize that bag too.
                         drive(0.4)
@@ -539,13 +531,16 @@ class TeleoperationLaunchTest(unittest.TestCase):
                         (second / "metadata.yaml").is_file(), log_path.read_text()
                     )
 
+    def test_single_right_opt_in_tracking_protection(self):
+        self.run_mode(record=True, optional_controls=True)
+
     def test_single_right_default_left_menu_active_topics_and_finalized_bags(self):
         self.run_mode(record=True)
 
-    def test_single_right_menu_and_sustained_motion_after_homing_with_cbf_disabled(
+    def test_single_right_menu_and_sustained_motion_after_homing(
         self,
     ):
-        self.run_mode(record=True, cbf_enabled=False)
+        self.run_mode(record=True)
 
     def test_single_left(self):
         self.run_mode(side="left")
@@ -553,14 +548,14 @@ class TeleoperationLaunchTest(unittest.TestCase):
     def test_dual(self):
         self.run_mode(mode="dual")
 
-    def test_dual_cbf_disabled(self):
-        self.run_mode(mode="dual", cbf_enabled=False)
+    def test_dual_local_torque_limits(self):
+        self.run_mode(mode="dual")
 
     def test_dual_joystick_opens_only_the_assigned_hand(self):
-        self.run_mode(mode="dual", cbf_enabled=False, hands=True)
+        self.run_mode(mode="dual", hands=True)
 
-    def test_single_right_cbf_disabled(self):
-        self.run_mode(cbf_enabled=False, torque_scale=0.2, torque_rate_scale=0.1)
+    def test_single_right_local_torque_limits(self):
+        self.run_mode(torque_scale=0.2, torque_rate_scale=0.1)
 
 
 if __name__ == "__main__":

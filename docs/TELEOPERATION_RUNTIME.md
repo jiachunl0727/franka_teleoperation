@@ -31,7 +31,7 @@ ros2 launch teleop_bringup teleoperation.launch.py \
 ```
 
 Set single-left selection in the single file's `pipeline.single_controller`.
-Set bridge/Hand/recording/home/CBF switches in `pipeline`, not command arguments.
+Set bridge/Hand/recording/home switches in `pipeline`, not command arguments.
 The enabled Hand calibrates its empty fingers at startup. Configure `hand.speed_mps`
 for closing, `open_speed_mps` for opening, and `close_width_m`/`open_width_m` for
 travel. All widths are full gaps between the fingers.
@@ -46,7 +46,6 @@ ros2 topic echo /panda_1/controller_status
 ros2 topic echo /panda_1/cartesian_teleop_command
 ros2 topic echo /panda_1/homing_status
 ros2 topic echo /panda_1/gripper_events
-ros2 topic echo /panda_1/cbf_status
 ros2 topic echo /quest/recording_status
 ```
 
@@ -153,41 +152,9 @@ During trigger-enabled Cartesian/orientation-only control, a dynamically
 consistent nullspace term gently favors that same configured home posture and
 repels joint limits. Configure its gains, cap and entry ramp under `controller`
 (or `arm_settings.<arm>.controller`); `nullspace_enabled: false` disables it.
-The final CBF retains joint-limit enforcement and adds optional singularity rows.
-Both the overall `pipeline.cbf_enabled` switch and `cbf.singularity_enabled` must
-be true for singularity protection. Check the selected runtime file for the
-current overall switch. The shared world-table guard and actuator bounds
-remain active regardless. See [CBF_PANDA.md](CBF_PANDA.md#nullspace-posture-and-singularity-constraint)
-for equations, thresholds and termination behavior.
-
-Safety execution defaults to `cbf.execution: asynchronous` in single and dual
-modes. The nominal torque loop never waits for the background QP. Delayed/failed
-results use local braking then joint holding. Fresh valid results alone cannot
-resume a held trigger: release/re-press after the fault, with the configured
-healthy dwell, is required. `cbf_status` exposes worker age/status, rejection or
-fallback reason, peer availability, holding state and mandatory table status.
-A new engagement has a bounded warmup window while its matching worker result
-arrives. Worker timing and result age are separate controls; see
-[CBF_PANDA.md](CBF_PANDA.md). The world-z table plane uses surveyed
-`world_from_base_xyz_xyzw`, `cbf.table_height` and `table_minimum_clearance`.
-Even with CBF disabled, an impossible table/actuator combination can stop the
-owner; survey the plane and inspect geometry before physical use.
-
-For deliberate mock recalibration after startup:
-
-```bash
-ros2 service call /panda_1/calibrate_gripper \
-  quest_teleop_interfaces/srv/CalibrateGripper \
-  '{empty_hand_confirm: true, operator_confirm: true}'
-```
-
-Recording profile, namespace, debounce and output folder live under `recording`
-in the runtime file. Only selected published topics are included at episode start;
-inactive arm topics are excluded in Menu mode. Inspect the reported finalized path:
-
-```bash
-ros2 bag info /ws/log/quest_bags/REPLACE_WITH_REPORTED_EPISODE
-```
+Torque magnitude/rate clipping belongs to `teleop_controllers`. No CBF,
+singularity, collision or table constraint is currently executed. See
+[the ownership contract](CONTROLLER_ARCHITECTURE.md).
 
 ## Hand joystick control and force holding
 
@@ -352,13 +319,10 @@ all active ROS message consumers before restarting the pipeline.
 | `Move command rejected` with mode `Reflex` | The robot rejected entry into torque control. Inspect the startup `current_errors` and `last_motion_errors`, and restore readiness through the operator's normal robot procedure. The runtime does not recover errors automatically. |
 | `reason: position_hold`, `motion_enabled: false` | Local joint holding is active at startup or during a pause, including ordinary Quest input faults. Fresh release/re-engagement is required for teleoperation. |
 | Input fault or stale command | Check the raw input, mapped command, clock validity and bridge connection; recovery requires a fresh valid trigger release/press. |
-| `Latched CBF stop` | Inspect the named cause and timing/model diagnostics. Inspect essential model data and the mandatory actuator/table checks. Ordinary asynchronous worker delays no longer terminate the owner. See [CBF_PANDA.md](CBF_PANDA.md). |
-| Dual startup `result_deadline`, cycle 1, CBF disabled | This describes the old synchronous path. Default asynchronous owners do not wait for a paired worker solve. Check the selected execution mode and rebuilt overlay. |
 | No saved trajectory report data | A live PlotJuggler window does not record topics. Start/finalize an episode and check that it includes `tracking_samples`; see [TRAJECTORY_MONITORING.md](TRAJECTORY_MONITORING.md). |
 | Menu does not start the next episode | Inspect `/quest/recording_status` and the `Recording` / `Menu press` log lines. They distinguish finalization, missing publishers, rejected input and an active recording. Homing does not suppress Menu. |
-| Only small movements or intermittent response | Compare `Mapper state` and `Motion state` lines: source tracking/clutch readiness, measured-pose freshness, requested versus enabled motion, safety fallback, homing, target error and torque norms are reported separately. A ready FCI connection does not imply active Cartesian tracking. |
-| Gripper responds but arm remains still | Arm motion requires the assigned **index trigger**, independently of joystick gripper input. Check `Mapped input: motion_requested=1`. A valid `trigger released` state keeps position holding; it is not a CBF rejection. |
-| `Safety hold entered` after a motion request | Read its first cause, guard status and violation. Fully verified local repair should continue without latching; a genuine worker/model/constraint failure still requires healthy results and release/re-engagement. The first hold model is saved under `/tmp/franka-cbf-hold-arm-...txt` outside the realtime callback. |
+| Only small movements or intermittent response | Compare `Mapper state` and `Motion state` lines: source tracking/clutch readiness, measured-pose freshness, requested versus enabled motion, homing, target error and torque norms are reported separately. A ready FCI connection does not imply active Cartesian tracking. |
+| Gripper responds but arm remains still | Arm motion requires the assigned **index trigger**, independently of joystick gripper input. Check `Mapped input: motion_requested=1`. A valid `trigger released` state keeps position holding. |
 
 Controller or Hand process failure stops combined bringup. Keep its terminal
 output when investigating a failure. Parameters are loaded at startup; edit
@@ -367,7 +331,7 @@ the selected YAML and restart to apply changes.
 The launch log may contain only the process exit and shutdown sequence. The
 controller's full ROS log is stored separately in the same container, for
 example `/root/.ros/log/cartesian_impedance_controller_PID_TIMESTAMP.log`.
-Read the first `Controller stopped:` / `Latched CBF stop:` message and its timing
+Read the first `Controller stopped:` message and its timing
 lines to identify the initiating failure; subsequent Hand stop requests and
 Quest disconnection are expected bringup cleanup.
 
@@ -379,66 +343,3 @@ terminal. If bag finalization ignores SIGINT for 10 seconds, the recorder sends
 SIGTERM, then SIGKILL after another 3 seconds if needed. This prevents permanent
 `stopping` lockout; a forcibly terminated/unfinalized bag remains an error and
 must be inspected before analysis. No new episode is queued during finalization.
-
-Safety recovery still needs healthy current-state checks, a post-fault trigger
-release and deliberate re-engagement. A continuously healthy interval while
-released counts toward `cbf.recovery_dwell_ms`; changing mode to engagement does
-not restart it. A rejected/missing current-context worker result, peer/model
-problem or other health interruption resets that interval. Input faults can still
-interrupt tracking; the diagnostics identify them rather than making stale input
-eligible for motion.
-
-The local guard first attempts a bounded correction of a changing tracking
-candidate and continues tracking only if all active rows pass. It selects braking
-and latches recovery only when ordinary verified correction is unavailable or
-input/worker/model health requires fallback. This avoids treating every feasible
-safety intervention as a new release-required stop. Tracking correction and
-braking share the same 12-sweep bound; torque/rate caps and mandatory table
-protection remain enforced.
-
-## ROS discovery and the Quest connection
-
-The 2026-10-28 trials exposed two independent communication paths. A minimal
-Humble node using no repository messages reproduced 15 buffer errors on
-network-wide domain 0 in three seconds. Domain 137 or localhost-only discovery
-had none; the installed custom-message serialization roundtrip passed. This
-identifies interference from other network DDS participants, without identifying
-their ROS distribution or treating it as a controller-message corruption bug.
-
-The workspace now defaults to a local ROS graph when sourced:
-
-```bash
-source /opt/ros/humble/setup.bash
-source /ws/install/setup.bash
-echo "ROS_DOMAIN_ID=$ROS_DOMAIN_ID ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY"
-# Defaults: ROS_DOMAIN_ID=42 ROS_LOCALHOST_ONLY=1
-```
-
-Stop old launches before switching environments; processes retain the settings
-with which they started. Source the workspace in all observer/recorder terminals
-too. Explicit domain settings are preserved. For remote ROS monitoring,
-deliberately choose the same domain and set `TELEOP_ROS_LOCALHOST_ONLY=0` before
-sourcing this workspace on each PC. This dedicated override distinguishes an
-intentional remote graph from Humble's ordinary localhost-variable default of 0.
-Outside this workspace, use the resulting `ROS_LOCALHOST_ONLY` value and the same
-domain for the observer. Namespaces alone do not isolate DDS discovery domains. No Docker or
-robot IP change is required.
-
-ROS discovery is separate from Quest's TCP connection. The last trial reached
-arm control and Hand calibration but logged no `Quest TCP client connected`.
-That means no headset stream reached the bridge, even if the app was visible.
-After five seconds without a connection, the bridge now reports that condition
-and points to the USB route. Check the headset's USB/clock indicators. On the
-**PC host**, restore the reverse route if USB was reconnected:
-
-```bash
-cd ~/franka_teleoperation
-bash scripts/quest_adb_reverse.sh 45454
-```
-
-The updated native transport retries every 250 ms even without new OpenXR
-frames, and still discards stale samples/requires fresh input on reconnection.
-Rebuild/install the 2026-10-28 APK using the README's Android commands once;
-changing ROS network settings does not update the installed headset app.
-If USB remains disconnected, transport/ADB/foreground-session status still needs
-operator inspection; a ready arm or calibrated Hand does not establish it.

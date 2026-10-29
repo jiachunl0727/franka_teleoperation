@@ -1,6 +1,6 @@
 #pragma once
 
-#include "safety_filter/actuator_limits.hpp"
+#include "teleop_controllers/actuator_limits.hpp"
 #include "teleop_controllers/homing_controller.hpp"
 
 namespace teleop_controllers {
@@ -11,8 +11,13 @@ struct ManagerParameters {
   Eigen::Vector3d envelope_center{0, 0, 0.333};
   double chain_radius{0.316 + 0.0825 + std::hypot(0.0825, 0.384) + 0.088 + 0.107};
   double tool_offset{0.1034}, envelope_margin{0.001};
-  double torque_rate{safety_filter::panda_torque_rate_limit()};
-  Vector7 torque_limits{safety_filter::panda_torque_limits()};
+  double torque_rate{teleop_controllers::panda_torque_rate_limit()};
+  Vector7 torque_limits{teleop_controllers::panda_torque_limits()};
+  // Controller reference and tracking-response settings.
+  bool reference_shaping_enabled{false}, tracking_protection_enabled{false};
+  double reference_linear_speed{0.05}, reference_angular_speed{0.15};
+  double reference_linear_acceleration{0.15}, reference_angular_acceleration{0.5};
+  double tracking_position_limit{0.03}, tracking_orientation_limit{0.20};
   bool valid() const noexcept;
 };
 
@@ -44,18 +49,25 @@ class ControllerManager {
   const Command& requested_command() const noexcept { return last_; }
   uint64_t release_source_ns() const noexcept { return last_release_source_ns_; }
   void homing_input(const HomingInput& input, uint64_t now_ns) noexcept {
-    if (!shutdown_)
+    if (!shutdown_ && !protective_stop_)
       homing_.input(input, now_ns);
   }
   void cancel_homing(const char* reason) noexcept { homing_.cancel(reason); }
   void fault(Reason reason) noexcept;
   void shutdown() noexcept;
-  void safety_fallback() noexcept;
   ManagerOutput update(const ArmState& state, uint64_t now_ns, double period) noexcept;
 
  private:
   bool fresh(const Command& command, uint64_t now_ns) const noexcept;
+  void protect(Reason reason) noexcept;
+  CartesianReference govern(const ArmState& state, double dt, bool reset) noexcept;
+  Vector7 protective_torque(const ArmState& state) noexcept;
   ManagerParameters p_;
+  CartesianReference governed_{};
+  bool protective_stop_{false}, protective_holding_{false};
+  Reason protective_reason_{Reason::startup};
+  Vector7 protective_q_{Vector7::Zero()};
+  double blocked_seconds_{0};
   HomingController homing_;
   TorqueController& teleoperation_;
   TorqueController& orientation_only_;

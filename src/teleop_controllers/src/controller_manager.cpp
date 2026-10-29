@@ -6,6 +6,10 @@
 namespace teleop_controllers {
 const char* reason_name(Reason reason) noexcept {
   switch (reason) {
+    case Reason::tracking_limit:
+      return "protective_tracking_limit";
+    case Reason::input_velocity_limit:
+      return "protective_input_velocity_limit";
     case Reason::startup:
       return "startup";
     case Reason::released:
@@ -30,8 +34,6 @@ const char* reason_name(Reason reason) noexcept {
       return "invalid_robot_state";
     case Reason::shutdown:
       return "shutdown";
-    case Reason::safety_filter:
-      return "safety_filter";
     case Reason::homing:
       return "homing_owns_nominal_control";
     case Reason::position_hold:
@@ -61,7 +63,14 @@ const char* state_fault_name(StateFault fault) noexcept {
 }
 
 bool ManagerParameters::valid() const noexcept {
-  const double numbers[] = {chain_radius, torque_rate};
+  const double numbers[] = {chain_radius,
+                            torque_rate,
+                            reference_linear_speed,
+                            reference_angular_speed,
+                            reference_linear_acceleration,
+                            reference_angular_acceleration,
+                            tracking_position_limit,
+                            tracking_orientation_limit};
   for (double value : numbers)
     if (!std::isfinite(value) || value <= 0)
       return false;
@@ -82,9 +91,14 @@ bool ControllerManager::fresh(const Command& c, uint64_t now) const noexcept {
 }
 
 void ControllerManager::fault(Reason reason) noexcept {
+  if (protective_stop_) {
+    enabled_ = false;
+    reason_ = protective_reason_;
+    return;
+  }
   teleoperation_reset_pending_ = true;
-  const bool exit_hold = reason == Reason::shutdown || reason == Reason::invalid_state ||
-                         reason == Reason::safety_filter || reason == Reason::homing;
+  const bool exit_hold =
+      reason == Reason::shutdown || reason == Reason::invalid_state || reason == Reason::homing;
   if (exit_hold) {
     local_hold_ = false;
     hold_reset_pending_ = true;
@@ -104,7 +118,7 @@ void ControllerManager::fault(Reason reason) noexcept {
 }
 
 void ControllerManager::accept(const Command& c, uint64_t now) noexcept {
-  if (shutdown_)
+  if (shutdown_ || protective_stop_)
     return;
   if (!c.valid || c.session[0] == '\0') {
     fault(Reason::invalid_command);
@@ -158,6 +172,11 @@ void ControllerManager::accept(const Command& c, uint64_t now) noexcept {
     fault(Reason::invalid_command);
     return;
   }
+  // Finite but implausible feedforward must not produce a torque impulse.
+  if (c.twist.head<3>().norm() > 1.0 || c.twist.tail<3>().norm() > 6.0) {
+    protect(Reason::input_velocity_limit);
+    return;
+  }
   if ((c.position - p_.envelope_center).norm() >
       p_.chain_radius + p_.tool_offset + p_.envelope_margin) {
     fault(Reason::envelope);
@@ -180,9 +199,78 @@ void ControllerManager::shutdown() noexcept {
   homing_.cancel("shutdown");
 }
 
-void ControllerManager::safety_fallback() noexcept {
-  fault(Reason::safety_filter);
-  homing_.cancel("CBF fallback");
+namespace {
+Eigen::Vector3d bounded(Eigen::Vector3d v, double limit) noexcept {
+  const double norm = v.norm();
+  if (norm > limit)
+    v *= limit / norm;
+  return v;
+}
+Eigen::Vector3d rotation_vector(Eigen::Quaterniond q) noexcept {
+  q.normalize();
+  if (q.w() < 0)
+    q.coeffs() *= -1;
+  const Eigen::AngleAxisd a(q);
+  return a.axis() * a.angle();
+}
+}  // namespace
+
+void ControllerManager::protect(Reason reason) noexcept {
+  if (protective_stop_)
+    return;
+  fault(reason);
+  protective_stop_ = true;
+  protective_reason_ = reason;
+  reason_ = reason;
+  local_hold_ = false;
+  homing_.cancel("latched motion protection");
+}
+
+Vector7 ControllerManager::protective_torque(const ArmState& s) noexcept {
+  // Do not engage the high-stiffness parked law while the arm is moving.
+  // Capture once after braking. Bound acceleration demand before mapping to
+  // torque, including the hold correction; runtime actuator clipping follows.
+  if (!protective_holding_ && s.dq.cwiseAbs().maxCoeff() < .02) {
+    protective_q_ = s.q;
+    protective_holding_ = true;
+  }
+  Vector7 a = -20.0 * s.dq;
+  if (protective_holding_)
+    a = 25.0 * (protective_q_ - s.q) - 10.0 * s.dq;
+  a = a.cwiseMax(-2.0).cwiseMin(2.0);
+  return s.coriolis + s.mass * a;
+}
+
+CartesianReference ControllerManager::govern(const ArmState& s, double dt, bool reset) noexcept {
+  if (reset) {
+    governed_ = CartesianReference{s.position, s.orientation, Vector6::Zero()};
+    blocked_seconds_ = 0;
+  }
+  const Eigen::Vector3d goal = last_.orientation_only ? orientation_hold_position_ : last_.position;
+  const Eigen::Vector3d displacement = goal - governed_.position;
+  const Eigen::Vector3d rotation =
+      rotation_vector(last_.orientation * governed_.orientation.conjugate());
+  // Native/pose-derived feedforward biases the trajectory velocity, but both
+  // pose and velocity sent to impedance come from this single bounded trajectory.
+  Eigen::Vector3d v = last_.twist.head<3>() + 4.0 * displacement;
+  Eigen::Vector3d w = last_.twist.tail<3>() + 4.0 * rotation;
+  v = bounded(v, std::min(p_.reference_linear_speed,
+                          std::sqrt(2 * p_.reference_linear_acceleration * displacement.norm())));
+  w = bounded(w, std::min(p_.reference_angular_speed,
+                          std::sqrt(2 * p_.reference_angular_acceleration * rotation.norm())));
+  if (last_.orientation_only)
+    v.setZero();
+  const Eigen::Vector3d old_v = governed_.twist.head<3>(), old_w = governed_.twist.tail<3>();
+  v = old_v + bounded(v - old_v, p_.reference_linear_acceleration * dt);
+  w = old_w + bounded(w - old_w, p_.reference_angular_acceleration * dt);
+  governed_.twist << v, w;
+  governed_.position += v * dt;
+  const double angle = w.norm() * dt;
+  if (angle > 1e-12)
+    governed_.orientation =
+        (Eigen::Quaterniond(Eigen::AngleAxisd(angle, w.normalized())) * governed_.orientation)
+            .normalized();
+  return governed_;
 }
 
 ManagerOutput ControllerManager::update(const ArmState& s, uint64_t now, double dt) noexcept {
@@ -205,10 +293,40 @@ ManagerOutput ControllerManager::update(const ArmState& s, uint64_t now, double 
           std::min(p_.torque_limits[j], s.previous_torque[j] + slew))
         out.state_fault = StateFault::actuator_interval;
   }
+  Eigen::LDLT<Eigen::Matrix<double, 7, 7>> model_factor;
+  if (out.state_fault == StateFault::none) {
+    model_factor.compute(s.mass);
+    if (!s.mass.isApprox(s.mass.transpose(), 1e-9) || model_factor.info() != Eigen::Success ||
+        !model_factor.isPositive())
+      out.state_fault = StateFault::nonfinite_state;
+  }
   if (out.state_fault != StateFault::none) {
     fault(Reason::invalid_state);
-    out.reason = reason_;
+    out.reason = Reason::invalid_state;
     return result;  // Runtime must terminate; never send placeholder torques.
+  }
+
+  const bool reset_reference =
+      teleoperation_reset_pending_ ||
+      (enabled_ && selected_ != (last_.orientation_only ? &orientation_only_ : &teleoperation_));
+  if (enabled_ && p_.tracking_protection_enabled && p_.reference_shaping_enabled &&
+      !reset_reference &&
+      ((s.position - governed_.position).norm() > p_.tracking_position_limit ||
+       rotation_vector(s.orientation * governed_.orientation.conjugate()).norm() >
+           p_.tracking_orientation_limit))
+    protect(Reason::tracking_limit);
+
+  if (protective_stop_) {
+    out.reason = protective_reason_;
+    out.protective_stop = true;
+    out.target_position = s.position;
+    out.target_orientation = s.orientation;
+    out.nominal = protective_torque(s);
+    if (!out.nominal.allFinite()) {
+      out.state_fault = StateFault::nonfinite_nominal;
+      out.reason = Reason::invalid_state;
+    }
+    return result;
   }
 
   const bool was_homing = homing_.active();
@@ -236,6 +354,40 @@ ManagerOutput ControllerManager::update(const ArmState& s, uint64_t now, double 
     out.target_position = orientation_hold_position_;
     out.desired_twist.head<3>().setZero();
   }
+  if (enabled_) {
+    const auto trajectory =
+        p_.reference_shaping_enabled
+            ? govern(s, dt, reset_reference)
+            : CartesianReference{out.target_position, out.target_orientation, out.desired_twist};
+    out.target_position = trajectory.position;
+    out.target_orientation = trajectory.orientation;
+    out.desired_twist = trajectory.twist;
+    const double position_error = (s.position - trajectory.position).norm();
+    const double angle_error =
+        rotation_vector(s.orientation * trajectory.orientation.conjugate()).norm();
+    // Persistent lack of tracking cannot wind up the servo reference, even
+    // when the wrists remain stuck and the proximal arm can compensate.
+    if (p_.tracking_protection_enabled && (position_error > .5 * p_.tracking_position_limit ||
+                                           angle_error > .5 * p_.tracking_orientation_limit))
+      blocked_seconds_ += dt;
+    else
+      blocked_seconds_ = 0;
+    if (p_.tracking_protection_enabled &&
+        (position_error > p_.tracking_position_limit ||
+         angle_error > p_.tracking_orientation_limit || blocked_seconds_ > .25)) {
+      protect(Reason::tracking_limit);
+      out.reason = protective_reason_;
+      out.protective_stop = true;
+      out.motion_enabled = false;
+      out.desired_twist.setZero();
+      out.nominal = protective_torque(s);
+      if (!out.nominal.allFinite()) {
+        out.state_fault = StateFault::nonfinite_nominal;
+        out.reason = Reason::invalid_state;
+      }
+      return result;
+    }
+  }
   ControlReference reference =
       CartesianReference{out.target_position, out.target_orientation, out.desired_twist};
   if (result.homing.active) {
@@ -248,8 +400,8 @@ ManagerOutput ControllerManager::update(const ArmState& s, uint64_t now, double 
                                     !last_.enabled && fresh(last_, now)))))) {
     // A deliberate release holds the measured arm configuration, never an old
     // Quest goal. Startup also holds locally without authorizing teleoperation.
-    // Quest input loss does not release a parked arm. Safety fallback, invalid
-    // state, active homing and shutdown retain their separate stop policy.
+    // Quest input loss does not release a parked arm. Invalid state, active homing and shutdown
+    // retain their separate stop policy.
     law = &position_hold_;
     local_hold_ = true;
     if (selected_ != law || hold_reset_pending_) {
@@ -284,8 +436,7 @@ ManagerOutput ControllerManager::update(const ArmState& s, uint64_t now, double 
     out.motion_enabled = false;
     out.position_hold_active = false;
   }
-  // No clamping here: every selected nominal goes through the same final
-  // safety coordinator, including its actuator-only path when CBF is disabled.
+  // The local runtime applies the same actuator clipping to every nominal law.
   return result;
 }
 }  // namespace teleop_controllers

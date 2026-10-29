@@ -12,7 +12,7 @@ struct Fixture {
   uint64_t now{1000000000}, sequence{0};
   ft::HomingInput last;
   explicit Fixture(ft::HomingParameters parameters = {}) : p(parameters), core(p) {
-    s.q = Eigen::Map<const ft::Vector7>(safety_filter::kHome.data());
+    s.q = Eigen::Map<const ft::Vector7>(teleop_controllers::kHome.data());
     s.q[0] += .2;
     s.q[1] -= .1;
     s.q[5] += .2;
@@ -76,8 +76,8 @@ TEST(Homing, LongHoldRequestsOnlyOnReleaseAndUsesFixedHome) {
   for (int n = 0; n < 10000 && out.active; ++n)
     out = f.tick(true);
   EXPECT_EQ(out.phase, ft::HomePhase::succeeded);
-  EXPECT_TRUE(
-      out.desired_q.isApprox(Eigen::Map<const ft::Vector7>(safety_filter::kHome.data()), 1e-9));
+  EXPECT_TRUE(out.desired_q.isApprox(
+      Eigen::Map<const ft::Vector7>(teleop_controllers::kHome.data()), 1e-9));
   EXPECT_LT(out.desired_dq.norm(), 1e-9);
 }
 TEST(Homing, InputReceivedDuringModelPreparationUsesConsumptionTime) {
@@ -219,7 +219,7 @@ TEST(Homing, NominalJointLawAndStartLimits) {
   EXPECT_EQ(bad.tick().phase, ft::HomePhase::failed);
 }
 TEST(Trajectory, AnalyticalVelocityMatchesPositionsAndFERBounds) {
-  const ft::Vector7 home = Eigen::Map<const ft::Vector7>(safety_filter::kHome.data());
+  const ft::Vector7 home = Eigen::Map<const ft::Vector7>(teleop_controllers::kHome.data());
   ft::Vector7 start = home;
   start[0] += .2;
   start[1] -= .1;
@@ -234,7 +234,7 @@ TEST(Trajectory, AnalyticalVelocityMatchesPositionsAndFERBounds) {
                                 2e-6;
     EXPECT_TRUE(velocity.isApprox(numeric, 1e-5) || (velocity - numeric).norm() < 1e-8);
     for (int j = 0; j < 7; ++j)
-      EXPECT_LT(std::abs(velocity[j]), safety_filter::kJointVelocity[j]);
+      EXPECT_LT(std::abs(velocity[j]), teleop_controllers::kJointVelocity[j]);
     EXPECT_LE(((velocity - previous) / .001).cwiseAbs().maxCoeff(), .75 + 1e-6);
     previous = velocity;
     if (trajectory.getDesiredJointPositions(t).second)

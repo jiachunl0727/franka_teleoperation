@@ -8,7 +8,16 @@ Use your installation's configured robot IPs, mapping, gains and geometry.
 New to the repository? The [documentation guide](docs/README.md) links the
 architecture, operation, monitoring and development instructions. The current
 pipeline holds measured joint position after normal trigger release and uses
-35% default torque/rate caps and a shared-world table guard even with optional CBF disabled.
+controller-owned torque magnitude/rate clipping at 35% of Panda ceilings.
+Reference shaping, tracking-error protection and Cartesian force/moment caps
+are optional and disabled by default. Enable them separately with
+`controller.reference_shaping_enabled`, `controller.tracking_protection_enabled`
+and `controller.cartesian_wrench_limits_enabled`. Torque magnitude and slew-rate
+clipping remain active independently.
+
+The CBF layer and its settings have been removed. There is currently no table,
+collision, singularity or CBF joint-state enforcement. See the
+[package ownership contract](docs/CONTROLLER_ARCHITECTURE.md).
 
 | Terminal | Where commands run |
 | --- | --- |
@@ -96,16 +105,16 @@ restart the launch after changing settings.
 | `pipeline` | Backend, mode and feature switches; `single_controller` selects the hand only in the single-arm template |
 | `quest.bridge` | USB receiver port, bind address, namespace and clock/freshness limits; retain port `45454` with the current Quest app |
 | `arms.<arm_name>` | Actual `robot_ip`, controller assignment, namespace/base frame, input/output topics, calibrated basis, scales, trigger thresholds and mapper timing |
-| `controller` | Impedance gains, actuator limits/rate, tool envelope and homing speed/gains/stop settings |
+| `controller` | Impedance gains, reference/effort/motion protection limits, actuator limits/rate, tool envelope and homing settings |
 | `hand` | Finger speeds, cable diameter/tolerance, force, joystick thresholds and timing |
-| `cbf` | Torque/rate scales (always enforced), surveyed table height, clearances, obstacle spheres and solver failure limit |
-| `arm_settings.<arm_name>` | Per-arm controller/Hand overrides and `world_from_base_xyz_xyzw` transforms; names must match `arms` |
+| `arm_settings.<arm_name>` | Per-arm controller/Hand overrides; names must match `arms` |
 | `recording` | `mode: menu/continuous`, namespace, Menu input/debounce, selected topics, output folder and storage plugin |
 
-The single-arm working configuration currently selects hardware with
-`pipeline.cbf_enabled: false`; the dual template selects mock with CBF enabled.
 Inspect the selected file and set `pipeline.backend: mock` for robot-free work.
-Enable CBF on hardware only with commissioned geometry and realtime timing.
+The working single-arm file contains operator hardware settings.
+The historical [incident analysis](docs/MOTION_INCIDENT_20261029.md) records the
+abrupt-motion trials. Current ownership and removed protections are documented
+in [CONTROLLER_ARCHITECTURE.md](docs/CONTROLLER_ARCHITECTURE.md).
 Set `pipeline.start_hand: false` to omit fingers,
 or `pipeline.homing_enabled: false` to omit home gestures.
 
@@ -116,9 +125,8 @@ assuming the supplied software reference values fit your installation.
 
 Use floating-point YAML values and arrays for gains/transforms. The mapping basis
 is `[qx,qy,qz,qw]`; the base-to-world transform is `[x,y,z,qx,qy,qz,qw]` in metres.
-Both surveyed transforms are required for hardware dual operation. The single
-template uses its base frame as world by default and omits inter-arm settings;
-the dual template includes left/right assignments and inter-arm clearance.
+Hardware dual operation requires distinct robot IPs, namespaces and base frames. The single
+template contains one arm; the dual template includes left/right assignments.
 
 ## 3. Start the Quest app over USB
 
@@ -242,16 +250,14 @@ Startup and pauses hold a fixed measured joint configuration independently of
 Quest readiness. Missing, invalid or stale input cannot discard that anchor
 or reset its stiffness ramp. Input loss during engagement captures measured
 joints once and holds there; fresh release/re-engagement is still required.
-Safety fallback, homing priority, invalid-state termination and shutdown retain
+Homing priority, invalid-state termination and shutdown retain
 their separate stop policy.
 
-Arm torque/rate caps default to **35% of Panda FCI ceilings**, with CBF enabled
-or disabled. Edit `cbf.torque_limit_scale` and `cbf.torque_rate_limit_scale`
-in the selected runtime YAML and restart: defaults give `30.45 Nm` for joints
-1--4, `4.2 Nm` for joints 5--7 and `350 Nm/s`. Existing controller absolute caps
-can tighten these further. Standalone safety settings live in
-`src/safety_filter/config/safety.yaml`; combined bringup uses its selected YAML.
-See [actuator limit settings](docs/CBF_PANDA.md#editable-actuator-limits-including-cbf-disabled-operation).
+Arm torque/rate caps default to **35% of Panda FCI ceilings**. Edit
+`controller.torque_limit_scale` and `controller.torque_rate_limit_scale` in the
+selected YAML. Defaults give 30.45 Nm on joints 1–4, 4.2 Nm on joints 5–7 and
+350 Nm/s. Absolute controller caps may tighten them. Every nominal mode uses
+this package-local clipping; there is no dependency on a safety layer.
 
 For dual, edit `src/teleop_bringup/config/dual_panda.yaml`: set actual distinct
 IPs, calibrate each controller mapping, supply both surveyed base transforms
@@ -306,14 +312,13 @@ Command form: `ros2 launch <package> <launch_file> argument:=value`.
 
 | Package / launch | Standalone configuration / important arguments |
 | --- | --- |
-| `quest_teleop quest_teleop.launch.py` | Package `config/arms.yaml`; `arms_config`, `mode`, `single_controller`, bridge/mapper switches and bridge parameters |
-| `quest_teleop quest_usb_bridge.launch.py` | Bridge launch defaults; port, namespace, bind address and freshness parameters |
-| `quest_teleop pose_mapper.launch.py` | Mapper launch defaults; input/output topics, frame, hand, basis/scales and timing |
-| `teleop_controllers cartesian_impedance_controller.launch.py` | Package `controllers.yaml`, safety package `safety.yaml`; `runtime_config`, `safety_config`, `arms_config`, backend/confirmation/mode and home/CBF switches |
-| `teleop_controllers homing.launch.py` | Same owner/configuration with homing enabled; no automatic home |
-| `teleop_gripper gripper.launch.py` | Package `gripper.yaml`; `runtime_config`, `arms_config`, backend/confirmation/mode; one startup calibration |
-| `recording recording.launch.py` | Package `recording.yaml`; `recording_config`, `arms_config`, recording mode/topics/output/namespace |
-| `safety_filter safety_filter.launch.py` | Package `safety.yaml`; `safety_config`, `arms_config`, `cbf_enabled`; parameter include for an owner, not a separate robot process |
+| `teleop_bringup quest_usb_bridge.launch.py` | Quest USB bridge only; namespace and bridge parameters |
+| `teleop_bringup pose_mapper.launch.py` | Pose mapper only; namespace, topics and mapper parameters |
+| `teleop_bringup quest_teleop.launch.py` | Bringup `config/arms.yaml`; `arms_config`, `mode`, `single_controller`, bridge/mapper switches and bridge parameters |
+| `teleop_bringup cartesian_impedance_controller.launch.py` | Controller `controllers.yaml`; `runtime_config`, `arms_config`, backend/confirmation/mode and homing settings |
+| `teleop_bringup homing.launch.py` | Same owner/configuration with homing enabled; no automatic home |
+| `teleop_bringup gripper.launch.py` | Package `gripper.yaml`; `runtime_config`, `arms_config`, backend/confirmation/mode; one startup calibration |
+| `teleop_bringup recording.launch.py` | Package `recording.yaml`; `recording_config`, `arms_config`, recording mode/topics/output/namespace |
 
 Show complete arguments for any launch in **CONTAINER 2**:
 
@@ -376,14 +381,7 @@ Hand motion and stop commands run outside the arm torque loop. SDK/firmware
 latency still affects how quickly a finger stops; held duration is not an exact
 position measurement. See [Hand control details](docs/TELEOPERATION_RUNTIME.md#hand-joystick-control-and-force-holding).
 
-The Cartesian modes now support dynamically consistent nullspace torque toward
-`controller.home_joint_position`, shared with homing. The final CBF has an optional
-singularity barrier alongside joint limits. Both the overall CBF switch and
-`cbf.singularity_enabled` must be enabled for that barrier; saved overall switches
-are unchanged. See [configuration and formulation](docs/CBF_PANDA.md#nullspace-posture-and-singularity-constraint).
-
-Safety now defaults to asynchronous CBF-QP for both single and dual arms. Each
-1 kHz owner verifies candidates locally without waiting for the worker; ordinary
-worker failure brakes and holds with FCI retained. Recovery requires a fresh
-release/re-engagement. The mandatory world-table plane remains active when
-optional CBF constraints are disabled. See [safety execution and configuration](docs/CBF_PANDA.md).
+The Cartesian modes support a dynamically consistent nullspace posture
+preference toward `controller.home_joint_position`, shared with homing. This is
+a nominal controller preference. The removed CBF layer supplies no enforcement.
+See [CONTROLLER_ARCHITECTURE.md](docs/CONTROLLER_ARCHITECTURE.md).

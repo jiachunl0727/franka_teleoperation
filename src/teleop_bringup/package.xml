@@ -6,6 +6,7 @@
   <maintainer email="maintainer@example.com">Franka Teleoperation</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
@@ -13,7 +14,6 @@
   <exec_depend>quest_teleop</exec_depend>
   <exec_depend>teleop_controllers</exec_depend>
   <exec_depend>teleop_gripper</exec_depend>
-  <exec_depend>safety_filter</exec_depend>
   <exec_depend>recording</exec_depend>
   <test_depend>ament_cmake_pytest</test_depend>
   <test_depend>rclpy</test_depend>

@@ -67,8 +67,5 @@ float64[7] torque_limits
 float64 maximum_torque_rate
 bool torque_rate_limited
 bool torque_magnitude_limited
-bool cbf_enabled
-bool safety_fallback
-bool solver_succeeded
 float64 normalized_torque_intervention
 uint64 monitor_queue_drops

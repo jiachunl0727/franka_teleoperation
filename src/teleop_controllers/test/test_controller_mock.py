@@ -309,42 +309,6 @@ class ControllerMockTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stdout + result.stderr)
 
-    def test_early_mock_failure_keeps_original_error(self):
-        # End control on its first failed solve while the ROS executor is still
-        # starting. Repeat to exercise cleanup timing; never connect to FCI.
-        from ament_index_python.packages import get_package_prefix
-
-        executable = str(
-            Path(get_package_prefix("teleop_controllers"))
-            / "lib/teleop_controllers/cartesian_impedance_controller"
-        )
-        for attempt in range(5):
-            with self.subTest(attempt=attempt):
-                result = subprocess.run(
-                    [
-                        executable,
-                        "--ros-args",
-                        "-r",
-                        "__ns:=/startup_failure_" + uuid.uuid4().hex,
-                        "-p",
-                        "backend:=mock",
-                        "-p",
-                        "cbf.table_height:=2.0",
-                        "-p",
-                        "cbf.maximum_failures:=1",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                output = result.stdout + result.stderr
-                self.assertEqual(result.returncode, 2, output)
-                self.assertIn(
-                    "Controller stopped: latched CBF stop: solver_failures", output
-                )
-                self.assertNotIn("failed to create guard condition", output)
-                self.assertNotIn("terminate called", output)
-
 
 if __name__ == "__main__":
     unittest.main()

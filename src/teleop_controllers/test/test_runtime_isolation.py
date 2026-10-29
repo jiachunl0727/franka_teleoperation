@@ -95,8 +95,6 @@ def test_slow_status_publication_cannot_starve_anchors_or_input():
                     "-p",
                     "backend:=mock",
                     "-p",
-                    "cbf.enabled:=false",
-                    "-p",
                     "base_frame:=" + frame,
                     "-p",
                     "controller_state_topic:=" + prefix + "/raw",
