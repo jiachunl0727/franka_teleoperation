@@ -1,7 +1,7 @@
 # Integrated runtime and robot-free checks
 
-Overall bringup requires a complete runtime file and exposes only
-`runtime_config` and `operator_confirm`. Package-local configs remain the defaults
+Overall bringup requires `runtime_config` as its sole launch argument.
+Package-local configs remain the defaults
 for standalone features. Configuration/editing and operational commands are in
 [README.md](../README.md); schema and ownership are in
 [PACKAGE_STRUCTURE.md](PACKAGE_STRUCTURE.md).
@@ -20,14 +20,14 @@ In a sourced ROS container at `/ws`, select single or dual explicitly:
 source /opt/ros/humble/setup.bash
 source /ws/install/setup.bash
 ros2 launch teleop_bringup teleoperation.launch.py \
-  runtime_config:=/ws/src/teleop_bringup/config/single_panda.yaml
+  runtime_config:=/ws/src/teleop_bringup/config/single_panda/single_panda.yaml
 ```
 
 Stop that launch before using the dual template:
 
 ```bash
 ros2 launch teleop_bringup teleoperation.launch.py \
-  runtime_config:=/ws/src/teleop_bringup/config/dual_panda.yaml
+  runtime_config:=/ws/src/teleop_bringup/config/dual_panda/dual_panda.yaml
 ```
 
 Set single-left selection in the single file's `pipeline.single_controller`.
@@ -151,7 +151,7 @@ absence of later close/open requests does not itself prove calibration failed.
 During trigger-enabled Cartesian/orientation-only control, a dynamically
 consistent nullspace term gently favors that same configured home posture and
 repels joint limits. Configure its gains, cap and entry ramp under `controller`
-(or `arm_settings.<arm>.controller`); `nullspace_enabled: false` disables it.
+(or `arm_settings.<arm>.controller`). Nullspace posture control is always active.
 Torque magnitude/rate clipping belongs to `teleop_controllers`. No CBF,
 singularity, collision or table constraint is currently executed. See
 [the ownership contract](CONTROLLER_ARCHITECTURE.md).
@@ -313,7 +313,7 @@ all active ROS message consumers before restarting the pipeline.
 | Symptom | Meaning and next check |
 | --- | --- |
 | Missing `runtime_config` | Pass the complete selected YAML path; combined bringup has no default file. |
-| Hardware confirmation rejected | The selected file has `pipeline.backend: hardware`; hardware requires the explicit launch argument `operator_confirm:=true`. For software tests, select mock in YAML. |
+| Hardware address missing | Each selected hardware arm needs a configured `robot_ip`. For software tests, select the mock backend in YAML. |
 | `FCI torque control requires Idle` | Startup feedback reports an active/faulted mode or current errors. Finish the other motion/control session and restore healthy Idle in Desk. The runtime refuses a competing torque-control request and does not recover errors automatically. Historical `last_motion_errors` alone do not block healthy Idle startup. |
 | `sequence size exceeds remaining buffer` across unrelated nodes | DDS discovery/serialization traffic, not evidence of a torque or Hand fault. Re-source the updated workspace in every terminal and use its isolated domain/local discovery defaults; see below. |
 | `Move command rejected` with mode `Reflex` | The robot rejected entry into torque control. Inspect the startup `current_errors` and `last_motion_errors`, and restore readiness through the operator's normal robot procedure. The runtime does not recover errors automatically. |
@@ -330,7 +330,7 @@ the selected YAML and restart to apply changes.
 
 The launch log may contain only the process exit and shutdown sequence. The
 controller's full ROS log is stored separately in the same container, for
-example `/root/.ros/log/cartesian_impedance_controller_PID_TIMESTAMP.log`.
+example `/root/.ros/log/cartesian_pd_controller_PID_TIMESTAMP.log`.
 Read the first `Controller stopped:` message and its timing
 lines to identify the initiating failure; subsequent Hand stop requests and
 Quest disconnection are expected bringup cleanup.

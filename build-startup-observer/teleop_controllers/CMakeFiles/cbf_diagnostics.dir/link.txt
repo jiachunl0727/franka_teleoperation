@@ -1,0 +1,2 @@
+/usr/bin/ar qc libcbf_diagnostics.a CMakeFiles/cbf_diagnostics.dir/src/cbf_diagnostics.cpp.o
+/usr/bin/ranlib libcbf_diagnostics.a

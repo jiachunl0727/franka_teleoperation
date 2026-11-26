@@ -79,7 +79,7 @@ class ControllerMockTest(unittest.TestCase):
                         "ros2",
                         "run",
                         "teleop_controllers",
-                        "cartesian_impedance_controller",
+                        "cartesian_pd_controller",
                         "--ros-args",
                         "-r",
                         "__ns:=" + prefix,
@@ -259,25 +259,23 @@ class ControllerMockTest(unittest.TestCase):
                     node.destroy_node()
                     executor.shutdown()
 
-    def test_hardware_guard_fails_before_connecting(self):
+    def test_hardware_requires_ip_before_connecting(self):
         result = subprocess.run(
             [
                 "ros2",
                 "run",
                 "teleop_controllers",
-                "cartesian_impedance_controller",
+                "cartesian_pd_controller",
                 "--ros-args",
                 "-p",
                 "backend:=hardware",
-                "-p",
-                "robot_ip:=192.0.2.1",
             ],
             capture_output=True,
             text=True,
             timeout=10,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("operator_confirm", result.stderr)
+        self.assertIn("robot_ip", result.stderr)
 
     def test_invalid_hold_parameters_fail_before_control(self):
         cases = [
@@ -295,7 +293,7 @@ class ControllerMockTest(unittest.TestCase):
                         "ros2",
                         "run",
                         "teleop_controllers",
-                        "cartesian_impedance_controller",
+                        "cartesian_pd_controller",
                         "--ros-args",
                         "-p",
                         "backend:=mock",

@@ -13,6 +13,7 @@
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>quest_teleop</exec_depend>
   <exec_depend>teleop_controllers</exec_depend>
+  <exec_depend>cbf_safety_filter</exec_depend>
   <exec_depend>teleop_gripper</exec_depend>
   <exec_depend>recording</exec_depend>
   <test_depend>ament_cmake_pytest</test_depend>

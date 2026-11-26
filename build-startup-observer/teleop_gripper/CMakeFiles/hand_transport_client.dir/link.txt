@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/hand_transport_client.dir/test/hand_transport_client.cpp.o -o hand_transport_client  -Wl,-rpath,/ws/install/libfranka/lib /ws/install/libfranka/lib/libfranka.so.0.9.2 

@@ -12,6 +12,7 @@ from teleop_bringup.runtime_configuration import (
     PIPELINE_DEFAULTS,
     RECORDING_DEFAULTS,
     load_runtime,
+    load_runtime_document,
     unified_settings,
 )
 
@@ -45,30 +46,21 @@ class RuntimeConfigurationTest(unittest.TestCase):
         self.assertEqual(pipeline["backend"], "mock")
 
     def test_single_template_exposes_only_mode_relevant_settings(self):
-        path = Path(__file__).parents[2] / "teleop_bringup/config/single_panda.yaml"
+        path = Path(__file__).parents[2] / "teleop_bringup/config/single_panda/single_panda.yaml"
         data = yaml.safe_load(path.read_text())
+        self.assertNotIn("profiles", data)
+        for section in ("quest", "controller", "hand", "recording", "cbf"):
+            self.assertIn("/config/single_panda/", data[section]["config_file"])
+        self.assertNotIn("mock_measured_pose", data["pipeline"])
+        self.assertNotIn("gain_translation", data["controller"])
+        self.assertNotIn("worker_poll_ms", data["hand"])
+        self.assertNotIn("velocity_filter_cutoff_hz", data["arms"]["panda_1"])
         arms = load_arms(path)
-        load_runtime(path, arms)
-        pipeline, bridge, recording = unified_settings(data)
-        self.assertEqual(set(data["pipeline"]), set(PIPELINE_DEFAULTS))
-        self.assertEqual(set(data["quest"]["bridge"]), set(BRIDGE_DEFAULTS))
-        self.assertEqual(set(data["recording"]), set(RECORDING_DEFAULTS))
-        for section in ALLOWED:
-            expected = ALLOWED[section]
-            if section == "hand":
-                expected -= {
-                    "grasp_width_m",
-                    "epsilon_inner_m",
-                    "epsilon_outer_m",
-                    "grip_click_max_ms",
-                    "grip_double_click_ms",
-                    "grip_press",
-                    "grip_release",
-                    "grip_debounce_ms",
-                    "close_retry_interval_ms",
-                    "mock_object_width_m",
-                }
-            self.assertEqual(set(data[section]), expected)
+        settings = load_runtime(path, arms)
+        pipeline, bridge, recording = unified_settings(load_runtime_document(path))
+        self.assertFalse(pipeline["mock_measured_pose"])
+        self.assertEqual(set(settings["controller"]), ALLOWED["controller"])
+        self.assertEqual(set(settings["hand"]), ALLOWED["hand"] - {"mock_object_width_m"})
         # The template is edited for deployment; schema/selection checks must
         # not require an operator's saved backend to remain the mock default.
         self.assertEqual(pipeline["mode"], "single")
@@ -87,8 +79,11 @@ class RuntimeConfigurationTest(unittest.TestCase):
         self.assertEqual(left.parameters["controller_id"], "left")
 
     def test_dual_template_requires_no_physical_geometry_for_mock(self):
-        path = Path(__file__).parents[2] / "teleop_bringup/config/dual_panda.yaml"
+        path = Path(__file__).parents[2] / "teleop_bringup/config/dual_panda/dual_panda.yaml"
         data = yaml.safe_load(path.read_text())
+        self.assertNotIn("profiles", data)
+        for section in ("quest", "controller", "hand", "recording", "cbf"):
+            self.assertIn("/config/dual_panda/", data[section]["config_file"])
         # Installation YAML is operator-editable. Exercise mock selection using
         # a temporary copy, without changing saved IPs or surveyed transforms.
         data["pipeline"]["backend"] = "mock"
@@ -102,7 +97,7 @@ class RuntimeConfigurationTest(unittest.TestCase):
         self.assertEqual(data["pipeline"]["mode"], "dual")
         self.assertNotIn("single_controller", data["pipeline"])
         self.assertEqual(
-            set(data["pipeline"]), set(PIPELINE_DEFAULTS) - {"single_controller"}
+            set(data["pipeline"]), set(PIPELINE_DEFAULTS) - {"single_controller", "mock_measured_pose"}
         )
         self.assertTrue(
             all(
@@ -114,26 +109,67 @@ class RuntimeConfigurationTest(unittest.TestCase):
         self.assertEqual(len({a.namespace for a in arms}), 2)
         self.assertEqual(len({a.parameters["base_frame"] for a in arms}), 2)
         self.assertTrue(all(not a.robot_ip for a in arms))
-        self.assertNotIn("arm_settings", data)
-        load_runtime(path, arms)
-        for section in ALLOWED:
-            expected = ALLOWED[section] - (
-                {
-                    "grasp_width_m",
-                    "epsilon_inner_m",
-                    "epsilon_outer_m",
-                    "grip_click_max_ms",
-                    "grip_double_click_ms",
-                    "grip_press",
-                    "grip_release",
-                    "grip_debounce_ms",
-                    "close_retry_interval_ms",
-                    "mock_object_width_m",
-                }
-                if section == "hand"
-                else set()
-            )
-            self.assertEqual(set(data[section]), expected)
+        settings = load_runtime(path, arms)
+        self.assertEqual(
+            settings["controller"]["dynamics_model_file"],
+            "package://teleop_controllers/config/panda_umi.urdf",
+        )
+        for arm in arms:
+            local = settings.get("arm_settings", {}).get(arm.name, {})
+            self.assertNotIn("dynamics_model_file", local.get("controller", {}))
+        self.assertEqual(set(settings["controller"]), ALLOWED["controller"])
+        self.assertEqual(set(settings["hand"]), ALLOWED["hand"] - {"mock_object_width_m"})
+        self.assertEqual([a.parameters["velocity_filter_cutoff_hz"] for a in arms], [5.0, 10.0])
+
+    def test_profile_layers_and_derived_routes(self):
+        root = self.path.parent
+        (root / "quest.yaml").write_text(yaml.safe_dump({
+            "bridge": {"namespace": "/profile_bridge", "listen_port": 45400},
+            "mapper": {"translation_scale": 0.5, "velocity_filter_cutoff_hz": 12.0},
+            "mapper_by_controller": {"left": {"velocity_filter_cutoff_hz": 7.0}},
+        }))
+        (root / "controller.yaml").write_text("controller: {gain_translation: 10.0, gain_rotation: 3.0}\n")
+        (root / "recording.yaml").write_text("output_root: /profile_bags\n")
+        data = {
+            "pipeline": {"mode": "dual"},
+            "quest": {
+                "config_file": "quest.yaml",
+                "bridge": {"listen_port": 45454},
+            },
+            "controller": {"config_file": "controller.yaml", "gain_translation": 20.0},
+            "recording": {"config_file": "recording.yaml", "output_root": "/override_bags"},
+            "arms": {"a": {"controller": "left", "translation_scale": 0.75},
+                     "b": {"controller": "right"}},
+            "arm_settings": {"b": {"controller": {"gain_translation": 25.0}}},
+        }
+        path = self.write(data)
+        arms = select_arms(load_arms(path), "dual")
+        pipeline, bridge, recording = unified_settings(load_runtime_document(path))
+        settings = load_runtime(path, arms)
+        self.assertEqual(pipeline["backend"], "mock")
+        self.assertEqual(bridge["listen_port"], 45454)
+        self.assertEqual(recording["output_root"], "/override_bags")
+        self.assertEqual([a.parameters["translation_scale"] for a in arms], [0.75, 0.5])
+        self.assertEqual([a.parameters["velocity_filter_cutoff_hz"] for a in arms], [7.0, 12.0])
+        self.assertEqual(arms[0].parameters["controller_state_topic"],
+                         "/profile_bridge/quest_usb_bridge/left/controller_state")
+        self.assertEqual(settings["controller"], {"gain_translation": 20.0, "gain_rotation": 3.0})
+        self.assertEqual(settings["arm_settings"]["b"]["controller"], {"gain_translation": 25.0})
+
+    def test_bad_profiles_and_retired_hand_keys_are_rejected(self):
+        (self.path.parent / "bad_hand.yaml").write_text("hand: {grip_press: 0.5}\n")
+        for section, reference in (
+            ("hand", "bad_hand.yaml"),
+            ("quest", "package://quest_teleop/../quest.yaml"),
+            ("controller", None),
+        ):
+            runtime = dict(self.data, **{section: {"config_file": reference}})
+            with self.assertRaises(ValueError):
+                load_runtime_document(self.write(runtime))
+        with self.assertRaises(ValueError):
+            load_runtime_document(self.write({"controller": {"config_file": "controller.yaml"}}))
+        with self.assertRaises(ValueError):
+            load_runtime(self.write({"hand": {"grip_press": 0.5}}), [])
 
     def test_namespaced_bridge_and_per_arm_settings(self):
         self.data.update(
@@ -234,7 +270,7 @@ def test_nullspace_home_settings_validate(tmp_path):
     data = {
         "pipeline": {},
         "arms": {"arm": {"namespace": "/arm", "controller": "right"}},
-        "controller": {"nullspace_enabled": True, "home_joint_position": home},
+        "controller": {"home_joint_position": home},
         "arm_settings": {
             "arm": {"controller": {"home_joint_position": [0.2] + home[1:]}}
         },
@@ -246,7 +282,7 @@ def test_nullspace_home_settings_validate(tmp_path):
     import pytest
 
     for section, key, invalid in [
-        ("controller", "nullspace_enabled", "true"),
+        ("controller", "nullspace_enabled", False),
         ("controller", "nullspace_stiffness", 0),
         ("controller", "home_joint_position", [0.0] * 6),
     ]:
@@ -293,7 +329,7 @@ def test_removed_cbf_execution_settings_are_not_silently_accepted(tmp_path):
         "maximum_failures",
     ):
         path.write_text(yaml.safe_dump({"cbf": {key: 1}}))
-        with pytest.raises(ValueError, match="unknown runtime configuration section"):
+        with pytest.raises(ValueError, match="unknown or invalid cbf setting"):
             load_runtime(path, [])
 
 
@@ -308,11 +344,11 @@ def test_optional_controller_switches_validate_and_support_per_arm_overrides(tmp
     )
     source = Path(__file__).parents[2]
     for config in (
-        "teleop_bringup/config/single_panda.yaml",
-        "teleop_bringup/config/dual_panda.yaml",
-        "teleop_controllers/config/controllers.yaml",
+        "teleop_bringup/config/single_panda/single_panda.yaml",
+        "teleop_bringup/config/dual_panda/dual_panda.yaml",
+        "teleop_controllers/config/standalone.yaml",
     ):
-        saved = yaml.safe_load((source / config).read_text())
+        saved = load_runtime_document(source / config)
         assert all(saved["controller"][key] is False for key in switches)
     for switch in switches:
         for enabled in (False, True):
@@ -337,3 +373,72 @@ def test_optional_controller_switches_validate_and_support_per_arm_overrides(tmp
             )
             with pytest.raises(ValueError, match="must be true/false"):
                 load_runtime(path, [type("Arm", (), {"name": "arm"})()])
+
+
+def test_inverse_dynamics_parameters_and_per_arm_selection():
+    from teleop_bringup.runtime_configuration import validate_avoidance
+    import pytest
+
+    valid = {
+        "cartesian_control_law": "inverse_dynamics",
+        "inverse_dynamics_stiffness": [750.0] * 3 + [75.0] * 3,
+        "inverse_dynamics_damping_ratio": 1.0,
+        "inverse_dynamics_nullspace_stiffness": [10.0] * 7,
+        "inverse_dynamics_nullspace_damping": [6.324555320336759] * 7,
+    }
+    validate_avoidance(valid, "controller")
+    for key, values in {
+        "cartesian_control_law": ["inverse", 1, None],
+        "inverse_dynamics_stiffness": [[1.0] * 5, [0.0] * 6, [float("nan")] * 6],
+        "inverse_dynamics_damping_ratio": [True, 0, float("inf")],
+        "inverse_dynamics_nullspace_stiffness": [[1.0] * 6, [-1.0] * 7],
+        "inverse_dynamics_nullspace_damping": [[True] * 7, [float("nan")] * 7],
+    }.items():
+        for value in values:
+            with pytest.raises(ValueError):
+                validate_avoidance({key: value}, "controller")
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "runtime.yaml"
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    "pipeline": {},
+                    "arms": {"arm": {"namespace": "/arm", "controller": "right"}},
+                    "controller": valid,
+                    "arm_settings": {
+                        "arm": {
+                            "controller": {
+                                "cartesian_control_law": "cartesian_pd"
+                            }
+                        }
+                    },
+                }
+            )
+        )
+        settings = load_runtime(path, load_arms(path))
+        assert settings["controller"]["cartesian_control_law"] == "inverse_dynamics"
+        assert (
+            settings["arm_settings"]["arm"]["controller"]["cartesian_control_law"]
+            == "cartesian_pd"
+        )
+
+
+def test_runtime_urdf_model_resource_validation():
+    from teleop_bringup.runtime_configuration import validate_avoidance
+    import pytest
+
+    for resource in (
+        "package://teleop_controllers/config/panda_oscbf.urdf",
+        "/tmp/custom_panda.urdf",
+    ):
+        validate_avoidance({"dynamics_model_file": resource}, "controller")
+    for invalid in (
+        True,
+        1,
+        "",
+        "relative.urdf",
+        "package://missing",
+        "package:///file.urdf",
+    ):
+        with pytest.raises(ValueError):
+            validate_avoidance({"dynamics_model_file": invalid}, "controller")

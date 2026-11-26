@@ -157,7 +157,7 @@ class LaunchOptionsTest(unittest.TestCase):
     def test_owner_only_homing_disabled(self):
         self.run_features(
             {"start_controller": True},
-            ["panda_cartesian_impedance_controller"],
+            ["panda_cartesian_pd_controller"],
             [
                 "pose_mapper",
                 "franka_hand_worker",
@@ -198,7 +198,7 @@ class LaunchOptionsTest(unittest.TestCase):
                 "avoid competing pose publishers", result.stdout + result.stderr
             )
 
-    def test_runtime_file_is_required_and_only_two_arguments_are_exposed(self):
+    def test_only_runtime_file_argument_is_exposed_and_required(self):
         result = subprocess.run(
             ["ros2", "launch", "teleop_bringup", "teleoperation.launch.py"],
             capture_output=True,
@@ -224,7 +224,7 @@ class LaunchOptionsTest(unittest.TestCase):
 
         self.assertEqual(
             set(re.findall(r"^    '([^']+)':", result.stdout, re.M)),
-            {"runtime_config", "operator_confirm"},
+            {"runtime_config"},
         )
 
     def test_mapping_without_owners(self):
@@ -232,7 +232,7 @@ class LaunchOptionsTest(unittest.TestCase):
             {"start_mapper": True, "mock_measured_pose": True, "start_bridge": True},
             ["pose_mapper", "mock_measured_pose"],
             [
-                "panda_cartesian_impedance_controller",
+                "panda_cartesian_pd_controller",
                 "franka_hand_worker",
                 "menu_recorder",
             ],
@@ -243,7 +243,7 @@ class LaunchOptionsTest(unittest.TestCase):
             {"start_hand": True, "recording_enabled": True},
             ["franka_hand_worker", "menu_recorder"],
             [
-                "panda_cartesian_impedance_controller",
+                "panda_cartesian_pd_controller",
                 "pose_mapper",
                 "mock_measured_pose",
             ],
@@ -376,20 +376,21 @@ class LaunchOptionsTest(unittest.TestCase):
                     node.destroy_node()
                 self.assertEqual(proc.returncode, 0, (root / "launch.log").read_text())
 
-    def test_hardware_confirmation_and_removed_file_arguments(self):
+    def test_hardware_requires_ip_and_removed_arguments_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "runtime.yaml"
             for backend, extra, expected in [
-                ("hardware", [], "operator_confirm:=true"),
+                ("hardware", [], "hardware needs each selected robot_ip"),
+                ("hardware", ["operator_confirm:=true"], "accepts only runtime_config"),
                 (
                     "mock",
                     ["controller_config:=/unused"],
-                    "accepts only runtime_config and operator_confirm",
+                    "accepts only runtime_config",
                 ),
                 (
                     "mock",
                     ["backend:=mock"],
-                    "accepts only runtime_config and operator_confirm",
+                    "accepts only runtime_config",
                 ),
             ]:
                 config.write_text(
@@ -467,16 +468,16 @@ class StandaloneLaunchTest(unittest.TestCase):
                 ),
                 (
                     "teleop_bringup",
-                    "cartesian_impedance_controller.launch.py",
+                    "cartesian_pd_controller.launch.py",
                     [],
-                    "panda_cartesian_impedance_controller",
+                    "panda_cartesian_pd_controller",
                     prefix,
                 ),
                 (
                     "teleop_bringup",
                     "homing.launch.py",
                     [],
-                    "panda_cartesian_impedance_controller",
+                    "panda_cartesian_pd_controller",
                     prefix,
                 ),
                 (

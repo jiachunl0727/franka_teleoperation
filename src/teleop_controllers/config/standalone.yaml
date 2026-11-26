@@ -1,0 +1,44 @@
+controller:
+  # Runtime M/c/g come from this OSCBF URDF for both nominal control and CBF.
+  dynamics_model_file: package://teleop_controllers/config/panda_oscbf.urdf
+  # Teleoperation law; release holding, homing and actuator clipping are shared.
+  cartesian_control_law: cartesian_pd  # cartesian_pd or inverse_dynamics
+  # Inverse dynamics: physical K, base-frame xyz/rotation xyz; modal damping from M/K.
+  inverse_dynamics_stiffness: [1000.0, 1000.0, 1000.0, 100.0, 100.0, 100.0]  # N/m, Nm/rad
+  inverse_dynamics_damping_ratio: 1.0  # Scalar ratio in every mass-normalized mode.
+  # OSCBF nullspace acceleration gains; home_joint_position is the posture goal.
+  inverse_dynamics_nullspace_stiffness: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]  # s^-2
+  inverse_dynamics_nullspace_damping: [6.324555320336759, 6.324555320336759, 6.324555320336759, 6.324555320336759, 6.324555320336759, 6.324555320336759, 6.324555320336759]  # s^-1
+  torque_limit_scale: 0.35
+  torque_rate_limit_scale: 0.35
+  # Shared by homing and the nullspace posture preference; radians, Panda joint order.
+  home_joint_position: [0.0, -0.7854, 0.0, -2.3562, 0.0, 1.5708, 0.7854]
+  nullspace_stiffness: 10.0          # Nm/rad
+  nullspace_damping: 6.324555320336759  # Nm s/rad
+  nullspace_joint_limit_gain: 2.0    # Nm, soft repulsion for nominal posture preference
+  nullspace_joint_limit_margin: 0.35  # rad
+  nullspace_max_torque: 5.0         # Nm; uniform scaling retains the projection
+  nullspace_ramp_seconds: 0.25
+  # Optional controller limits, independent of CBF. Disabled by default.
+  reference_shaping_enabled: false
+  tracking_protection_enabled: false
+  cartesian_wrench_limits_enabled: false
+  # These positive values apply only when their corresponding switch is enabled.
+  reference_linear_speed: 0.05
+  reference_angular_speed: 0.15
+  reference_linear_acceleration: 0.15
+  reference_angular_acceleration: 0.5
+  tracking_position_limit: 0.03
+  tracking_orientation_limit: 0.2
+  cartesian_force_limit: 10.0
+  cartesian_moment_limit: 1.5
+  lambda_translation: 50.0
+  lambda_rotation: 40.0
+  gain_translation: 20.0
+  gain_rotation: 2.5
+  hold_stiffness: [600.0, 600.0, 600.0, 600.0, 250.0, 150.0, 75.0]
+  hold_damping: [50.0, 50.0, 50.0, 50.0, 20.0, 15.0, 10.0]
+  hold_stiffness_ramp_seconds: 0.25
+  maximum_torque_rate: 900.0
+  homing_speed_factor: 0.15
+arm_settings: {}

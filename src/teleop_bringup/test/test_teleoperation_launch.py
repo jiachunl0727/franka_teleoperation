@@ -122,10 +122,13 @@ class TeleoperationLaunchTest(unittest.TestCase):
             config.write_text(yaml.safe_dump(dict(arms=arms)))
             runtime = root / "runtime.yaml"
             combined = yaml.safe_load(
-                (Path(__file__).parents[1] / "config/single_panda.yaml").read_text()
+                (Path(__file__).parents[1] / "config/single_panda/single_panda.yaml").read_text()
             )
             combined["arms"] = arms
             combined["pipeline"]["start_bridge"] = False
+            # This suite tests mapping/nominal launch/recording, not an
+            # operator's currently enabled hardware CBF profile or RT budget.
+            combined["cbf"]["enabled"] = False
             record_config = root / "record.yaml"
             record_config.write_text(
                 yaml.safe_dump(
@@ -234,13 +237,6 @@ class TeleoperationLaunchTest(unittest.TestCase):
                             b.active = True
                             b.pressed = home is True or home == s
                             m.buttons = [b]
-                            b = QuestButtonState()
-                            b.name, b.active, b.pressed = (
-                                "thumbstick",
-                                True,
-                                joystick == s,
-                            )
-                            m.buttons.append(b)
                             if s == "left":
                                 b = QuestButtonState()
                                 b.name = "menu"

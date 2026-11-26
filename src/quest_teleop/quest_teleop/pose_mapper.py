@@ -112,7 +112,6 @@ class PoseMapper(Node):
         self.declare_parameter("translation_scale", 1.0)
         self.declare_parameter("rotation_scale", 1.0)
         self.declare_parameter("feedforward_scale", 1.0)
-        self.declare_parameter("twist_filter_cutoff_hz", 10.0)
         self.declare_parameter("pose_filter", "none")
         self.declare_parameter("velocity_filter", "low_pass")
         self.declare_parameter("pose_interpolation", "none")
@@ -142,7 +141,6 @@ class PoseMapper(Node):
         self.translation_scale = float(self.get_parameter("translation_scale").value)
         self.rotation_scale = float(self.get_parameter("rotation_scale").value)
         self.feedforward_scale = float(self.get_parameter("feedforward_scale").value)
-        legacy_cutoff = float(self.get_parameter("twist_filter_cutoff_hz").value)
         self.pose_processor = TrajectoryProcessor(
             self.get_parameter("pose_filter").value,
             self.get_parameter("pose_interpolation").value,
@@ -168,10 +166,8 @@ class PoseMapper(Node):
             raise ValueError(
                 "trigger thresholds must satisfy 0 <= release < engage <= 1"
             )
-        if not (0.0 <= self.feedforward_scale <= 1.0) or legacy_cutoff <= 0.0:
-            raise ValueError(
-                "feedforward_scale must be in [0,1] and cutoff must be positive"
-            )
+        if not 0.0 <= self.feedforward_scale <= 1.0:
+            raise ValueError("feedforward_scale must be in [0,1]")
         if self.timeout_ns <= 0 or self.min_dt <= 0 or self.max_dt < self.min_dt:
             raise ValueError("invalid freshness or derivative interval limits")
         self.pub = self.create_publisher(CartesianTeleopCommand, self.command_topic, 10)

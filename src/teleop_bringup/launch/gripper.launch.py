@@ -6,18 +6,15 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from teleop_bringup.configuration import load_arms, select_arms, launch_bool
+from teleop_bringup.configuration import load_arms, select_arms
 from teleop_bringup.runtime_configuration import load_runtime
 
 
 def setup(context):
     value = lambda key: LaunchConfiguration(key).perform(context)
     backend = value("backend")
-    confirmed = launch_bool(value("operator_confirm"))
     if backend not in ("mock", "hardware"):
         raise ValueError("backend must be mock/hardware")
-    if backend == "hardware" and not confirmed:
-        raise ValueError("hardware requires operator_confirm:=true")
     configured = load_arms(value("arms_config"))
     active = select_arms(configured, value("mode"), value("single_controller"))
     settings = load_runtime(value("runtime_config"), configured)
@@ -38,7 +35,6 @@ def setup(context):
                         hand,
                         backend=backend,
                         robot_ip=arm.robot_ip,
-                        operator_confirm=confirmed,
                         calibrate_on_start=True,
                         controller_id=arm.parameters["controller_id"],
                         controller_state_topic=arm.parameters["controller_state_topic"],
@@ -54,12 +50,11 @@ def generate_launch_description():
         mode="single",
         single_controller="right",
         backend="mock",
-        operator_confirm="false",
         arms_config=str(
-            Path(get_package_share_directory("teleop_bringup")) / "config/arms.yaml"
+            Path(get_package_share_directory("teleop_bringup")) / "config/single_panda/arms.yaml"
         ),
         runtime_config=str(
-            Path(get_package_share_directory("teleop_gripper")) / "config/gripper.yaml"
+            Path(get_package_share_directory("teleop_gripper")) / "config/standalone.yaml"
         ),
     )
     return LaunchDescription(

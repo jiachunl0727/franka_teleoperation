@@ -1,0 +1,20 @@
+-- run_test.py: extra environment variables:
+ - HAND_TRANSPORT_CLIENT=/ws/build-startup-observer/teleop_gripper/hand_transport_client
+-- run_test.py: invoking following command in '/ws/build-startup-observer/teleop_gripper':
+ - /usr/bin/python3 -u -m pytest /ws/src/teleop_gripper/test/test_hand_transport.py -o cache_dir=/ws/build-startup-observer/teleop_gripper/ament_cmake_pytest/test_hand_transport/.cache --junit-xml=/ws/build-startup-observer/teleop_gripper/test_results/teleop_gripper/test_hand_transport.xunit.xml --junit-prefix=teleop_gripper
+
+============================= test session starts ==============================
+platform linux -- Python 3.10.12, pytest-6.2.5, py-1.10.0, pluggy-0.13.0
+cachedir: build-startup-observer/teleop_gripper/ament_cmake_pytest/test_hand_transport/.cache
+rootdir: /ws
+plugins: ament-copyright-0.12.15, ament-xmllint-0.12.15, launch-testing-1.0.15, launch-testing-ros-0.19.14, ament-flake8-0.12.15, ament-lint-0.12.15, ament-pep257-0.12.15, colcon-core-0.21.3
+collected 3 items
+
+../../src/teleop_gripper/test/test_hand_transport.py ...                 [100%]
+
+- generated xml file: /ws/build-startup-observer/teleop_gripper/test_results/teleop_gripper/test_hand_transport.xunit.xml -
+============================== 3 passed in 0.55s ===============================
+
+
+-- run_test.py: return code 0
+-- run_test.py: verify result file '/ws/build-startup-observer/teleop_gripper/test_results/teleop_gripper/test_hand_transport.xunit.xml'

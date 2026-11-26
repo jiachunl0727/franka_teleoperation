@@ -6,6 +6,7 @@ find_package(ament_cmake_python REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(quest_teleop_interfaces REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(nlohmann_json REQUIRED)
@@ -15,10 +16,11 @@ install(PROGRAMS quest_teleop/pose_mapper.py DESTINATION lib/${PROJECT_NAME} REN
 install(PROGRAMS quest_teleop/mock_measured_pose.py DESTINATION lib/${PROJECT_NAME} RENAME mock_measured_pose)
 
 add_executable(quest_usb_bridge src/quest_usb_bridge.cpp)
-ament_target_dependencies(quest_usb_bridge rclcpp quest_teleop_interfaces)
+ament_target_dependencies(quest_usb_bridge rclcpp quest_teleop_interfaces std_msgs)
 target_link_libraries(quest_usb_bridge nlohmann_json::nlohmann_json)
 
 install(TARGETS quest_usb_bridge DESTINATION lib/${PROJECT_NAME})
+install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)

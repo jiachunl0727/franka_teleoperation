@@ -1,0 +1,98 @@
+# Frozen release-braking settings from the second recorded trial.
+# Experimental table/clearance values are preserved for regression only.
+robot:
+  model: panda
+  joints: 7
+  gravity_command_convention: externally_gravity_compensated
+execution:
+  mode: synchronous
+  fallback_strategy: bounded_recovery
+  max_constraints: 256
+  max_filter_time_us: 600
+  max_callback_time_us: 800
+  analytic_nominal: true
+  max_model_age_us: 2000
+qp:
+  formulation: hard
+objective:
+  type: torque_deviation
+  joint_weights:
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+solver:
+  backend: qpoases
+  warm_start: true
+  osqp:
+    max_iterations: 100
+    absolute_tolerance: 1.0e-05
+    relative_tolerance: 1.0e-05
+  qpoases:
+    max_working_set_recalculations: 100
+    termination_tolerance: 1.0e-06
+  piqp:
+    max_iterations: 50
+    absolute_tolerance: 1.0e-06
+    relative_tolerance: 1.0e-06
+verification:
+  hard_row_tolerance: 1.0e-06
+constraints:
+  joint_position:
+    enabled: true
+    safety_margin_rad: 0.1
+    alpha1: 10.0
+    alpha2: 10.0
+  joint_velocity:
+    enabled: true
+    safety_margin_rad_s: 0.1
+    alpha: 10.0
+  joint_acceleration:
+    enabled: false
+  table:
+    enabled: true
+    height_m: 0.105
+    clearance_m: 0.005
+    alpha1: 10.0
+    alpha2: 10.0
+  obstacles:
+    enabled: false
+    clearance_m: 0.05
+    alpha1: 10.0
+    alpha2: 10.0
+  self_collision:
+    enabled: true
+    clearance_m: 0.01
+    boundary_activation_m: 0.03
+    alpha1: 10.0
+    alpha2: 10.0
+  inter_arm_collision:
+    enabled: true
+    clearance_m: 0.010
+    alpha1: 10.0
+    alpha2: 10.0
+    max_peer_age_us: 10000
+    max_peer_skew_us: 10000
+    point_speed_limit_m_s: 1.0
+    point_acceleration_limit_m_s2: 5.0
+    reference_activation_m: 0.1
+  singularity:
+    enabled: true
+    characteristic_length_m: 0.3
+    minimum_normalized_sigma: 0.025
+    alpha1: 10.0
+    alpha2: 10.0
+geometry:
+  file: geometry.yaml
+diagnostics:
+  enabled: true
+  record_constraint_residuals: true
+  record_computation_time: true
+failure_policy:
+  solver_failure: request_existing_protective_handling
+  infeasible_qp: request_existing_protective_handling
+  invalid_model: terminate_control
+  deadline_overrun: request_existing_protective_handling

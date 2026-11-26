@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/test_urdf_model.dir/test/test_urdf_model.cpp.o -o test_urdf_model  gtest/libgtest_main.a gtest/libgtest.a libcontroller_manager.a -pthread /usr/lib/x86_64-linux-gnu/libtinyxml2.so 

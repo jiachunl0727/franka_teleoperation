@@ -1,4 +1,232 @@
+# Current CBF implementation policy (2026-11-22)
+
+The active CBF implementation is synchronous and uses one hard-constraint QP with seven torque variables. Asynchronous QP execution, the strict constraint strategy, elastic/slack QPs, and per-family relaxation settings have been removed. Bounded recovery is the fixed recovery behavior for every enabled constraint family; it limits permitted row widening to a clipped braking anchor and verifies every accepted command. The sole supported inter-arm policy is `independent`, which checks each arm against the latest valid peer snapshot and rejects snapshots that exceed configured age/skew limits. Shared solving and independent prediction have been removed from code and configuration. Historical entries below describe earlier development states and do not describe the current implementation.
+
 # Teleoperation implementation policy
+
+## Recovery torque computation switch (2026-11-18)
+
+The operator wants to try the current snapshot recovery policy with the original
+analytic shortcut plus native QP computation. Retain both computation methods;
+no obsolete architecture is to be deleted. Select via
+`execution.safety_torque_computation_method: projection|native_qp` in the active recovery
+overlay, retaining all geometry, held-arm behavior, recovery constraints, actuator
+limits and timing guards. Defaults in code stay projection; the active single
+and dual overlays select native_qp for the requested comparison. Distinguish
+explicit infeasibility from iteration/numerical failure, independently verify
+outgoing commands, and report projection backup use. Validate offline and mock;
+no hardware operation is requested.
+
+## Finish recovery, table replay and single-arm parity (2026-11-18)
+
+The operator requests completing the experimental snapshot recovery mode,
+checking the new hardware recording against the real 0.127 m table plane, and
+applying recovery to single-arm filtering. Retain both old strategies. Use small
+inherited strategy overlays so table height and other shared parameters cannot
+drift between a base and an experimental copy. Try requested inequalities before
+braking-reference allowances; report any recovery allowance and do not present
+accepted recovery commands as a minimum-clearance safety certificate. Preserve
+actuator limits, held-arm behavior, snapshot age and computation guards. No
+physical motion, deployment or automatic recovery is requested. See
+`cbf/SNAPSHOT_RECOVERY.md`.
+
+## Smooth speed-constraint onset correction (2026-11-17)
+
+The operator reports another housing-approach stop with the speed curve active.
+The recording identifies an infeasible torque-slew transition at the former
+50 mm excess-gap activation cutoff. Replace the hard switch with a continuous
+outer acceleration allowance on the speed row, leaving the fully enforced inner
+curve and the independent physical-distance barrier unchanged. Retain clearance,
+actuator/slew limits, held-arm control, anti-windup, prediction/freshness and
+computation guards. Validate a red/green onset regression and existing suites;
+no hardware operation is requested. This historical speed-curve implementation
+was removed with independent prediction.
+
+## Explicit closing-speed torque curve (2026-11-17)
+
+The operator authorizes an explicit distance-to-closing-speed curve enforced
+through CBF torque inequalities. Retain command-accumulation handling, but do not
+use inter-arm reference clipping/scaling for distance-dependent speed limiting.
+Use relative peer motion consistently, retain physical-distance stopping-domain
+checks and an independently verified distance row, and preserve held-arm control,
+geometry, clearance, 10 ms prediction/freshness and timing guards. Binding-row
+anti-windup also discards stored blocked tracking error against measured pose.
+Validate the latest recorded braking rejection, synthetic delayed-snapshot
+approaches, full-body constraints and mock runtime. No hardware motion or recovery
+is authorized. This historical speed-curve implementation was removed with
+independent prediction.
+
+## Full-body housing coverage correction (2026-11-17)
+
+The operator requests avoidance for every link/joint and identifies the Franka
+hand housing as the part with inadequate avoidance. Correct the missing housing
+sphere coverage using the supplied mesh; preserve the independent prediction,
+held-arm policy, transforms, clearances and computation guards. Verify complete
+sphere-pair participation and torque enforcement for all movable body spheres,
+plus continuous housing cover. This authorizes the housing geometry refinement
+beyond the prior instruction to retain the existing approximation. See
+`cbf/HAND_HOUSING_COVERAGE.md`.
+
+## Independent prediction agreement (2026-11-17)
+
+Historical agreement only. This policy was removed on 2026-11-22 at the operator's direction; it is not configurable or executable in the current code.
+
+The operator authorizes independent latest-snapshot collision avoidance using
+per-sphere measured velocities, a 10 ms constant-velocity swept prediction and
+10 ms snapshot validity. Do not include unexpected peer acceleration in this
+initial policy. Preserve held-arm ordinary/local-safety control without inter-arm
+yielding; active owners avoid without a paired wait. Retain current computation
+guards, current sphere geometry and the clearance to clearance +5 mm slow-approach
+target. Validate offline/mock; no automatic physical trial is requested. This
+agreement superseded the shared-policy choice below. Its implementation
+documentation was removed with the unsupported code.
+
+## Shared inter-arm implementation agreement (2026-11-17)
+
+Historical agreement only. This policy was removed on 2026-11-22 at the operator's direction; it is not configurable or executable in the current code.
+
+The operator authorizes implementing the shared safety design discussed in the
+grilling interview. Use the current sphere cover: configured minimum separation,
+with a slow-approach target from clearance to clearance +5 mm where other limits
+permit. The operator will tune clearance manually in hardware trials; no geometry
+refinement or automatic physical trial is requested. Preserve the released arm's
+ordinary holding/local-safety policy, with no inter-arm-driven yielding. Active
+arms initially have equal priority. Shape inward references early while retaining
+feasible tangential motion and retreat. Retain local limits, actuator clipping,
+600/800 us computation guards and existing fault/recovery behavior. A shared
+command must account for actual independent owner delivery and explicit future
+timing bounds; no unchecked cached torque, silent uncertainty removal or ROS
+torque transport. Validate numerical, recorded-model, threaded and mock paths;
+report timing failures and native allocations honestly. Its implementation
+documentation was removed with the unsupported code.
+
+## Boundary-reference correction and terminal capture (2026-11-11)
+
+The operator explicitly requests closing the missing table reference supervision
+before the next hardware trial, holding the last accepted reference for worsening
+motion while allowing feasible tangential/outward movement, and capturing exact
+rejection details. Extend the existing cone governor to table rows, eliminate
+blocked-input accumulation so small retreat remains available, and retain a
+fixed-size early terminal snapshot for non-RT logging/publication. Preserve barrier
+equations, original table rows, actuator bounds, deadlines, stop policy, shadow
+independence and activation defaults. Validate recorded/reference replay and
+robot-free tests; no automatic hardware trial or recovery. Details are in
+`cbf/BOUNDARY_REFERENCE_AND_REJECTION_CAPTURE.md`.
+
+## Current staged hardware commissioning (2026-11-11)
+
+The operator requests proceeding toward full CBF hardware trials and confirms
+the single .101 installation, UMI placement, 0.127 m table, clear workspace,
+secure mounting and reachable stop. Prepare operator-run baseline, full-shadow
+and separately reviewed filtered stages under
+`log/commissioning/2026-11-11-hardware-cbf/`. Test copies disable Hand motion and
+automatic homing and record continuously. Full single-arm scope is joint
+position/velocity, table, self-collision and singularity; keep unconfigured
+obstacles, inter-arm constraints and explicit acceleration off. Keep package
+activation defaults, saved operator settings and all existing guards unchanged.
+Fresh baseline/shadow hardware evidence must be reviewed before filtered
+progression. Do not auto-advance, auto-recover or prescribe physical contact or
+an actual near-singularity approach. Preserve the forced-mock timing-stop
+evidence rather than counting a later repeat as a clean original run.
+
+## Installed UMI fingers and offline avoidance review (2026-11-09)
+
+The operator requests adding the supplied printed fingers to URDF kinematics,
+dynamics and active collision geometry, and verifying table/singularity paths
+against original recorded samples before hardware. Each attachment including its
+screw is approximately 5 g, mounted on the gripping face of retained stock metal
+fingers. Preserve the exact OSCBF base asset and generate an augmented model;
+document homogeneous-mesh inertia and fixed-opening approximations. Cover both
+full opening sweeps in collision geometry. Keep all hardware activation switches,
+barrier gains, actuator limits and solver guards unchanged. Verification is
+read-only bag replay and mock/offline tests; no physical operation is requested.
+
+## Official URDF dynamics model (2026-11-06)
+
+The operator explicitly authorizes replacing libfranka runtime dynamics with
+the pinned OSCBF URDF model. Use a native allocation-free equivalent of its
+mass/Coriolis/gravity calculation, shared by nominal control and CBF. Remove
+libfranka model loading/dynamics calls and retain RobotState feedback, configured
+tool-frame conventions, actuator limits, all CBF settings/guards and existing
+activation defaults. Verify against actual OSCBF reference values, recorded
+replay and single/dual mock callback timing. No physical operation is requested.
+
+## Synchronous execution selection (2026-11-05)
+
+The operator explicitly requests switching to synchronous CBF execution while
+retaining other features. Select synchronous mode in the package CBF YAML and
+allow either validated execution mode for explicitly confirmed single-arm
+hardware commissioning. This supersedes the async-only commissioning requirement.
+Keep the 600 us filter / 800 us callback limits, diagnostics, actuator/barrier
+settings, default-disabled CBF activation and dual-arm hardware block. Retain the
+optional async implementation. Validate only offline/mock, including recorded
+hardware-model replay and full callback timing; no physical operation is requested.
+
+## Replayable acceptance diagnosis (2026-11-05, historical)
+
+The operator requested resolution of the persistent low acceptance rate and had
+no finger CAD. That investigation produced saved shadow snapshots and offline
+per-family/native-backend replay. The optional live capture path was later
+removed by user request. Use existing saved snapshots for replay; do not restore
+live capture without a new request. Do not run physical hardware or claim the
+hardware failure is fixed from mock results.
+
+## Hardware-shadow failure correction (2026-11-05)
+
+The operator authorizes diagnosing and fixing the two recorded single-arm shadow
+trials offline. The physical tabletop is 0.127 m above the mounting plane; the
+old 0.190 m value included a duplicated 0.063 m finger allowance. Retain the
+ordinary-finger model assumption and explicit 0.005 m clearance. Preserve exact
+nominal clipping in shadow. Accept an actuator-box projection only after checking
+every current original row; keep proposal freshness/epoch and deadline checks.
+Separate observational nominal feasibility from proposal command authorization.
+No physical operation or automatic filtered-mode selection is requested.
+
+## Single-arm commissioning software preparation (2026-11-05)
+
+The user explicitly authorizes preparing the staged commissioning path discussed
+in the conversation: shadow observation, then separately opted-in filtered torque.
+This supersedes blanket hardware blocking only for explicit single-arm
+commissioning. Keep defaults blocked/off, require separate confirmation plus
+existing operator confirmation, preserve direct-runtime validation, and keep
+dual-arm hardware CBF blocked. Shadow mode must not alter references or issued
+nominal actuator-bounded torques; rejected CBF proposals are diagnostic there.
+Retain callback deadline enforcement in shadow and filtered modes. Add hardware
+model-acquisition and callback-interval measurements without claiming FCI network
+or wake-up latency is measured. Test only mock/offline; no physical operation.
+
+## Callback budget and asynchronous proposals (2026-11-01)
+
+The latest user requires <=800 us callbacks for single and dual arms and explicitly
+authorizes asynchronous mode if synchronous optimization misses that target.
+Measured synchronous feasible-nominal optimization still missed it, so the new
+async mode offloads native QP work only. Owners rebuild current rows, verify
+proposal age/command epoch/current actuator bounds and every current original
+inequality, or verify a freshly computed owner holding law. Never replay unchecked
+commands/corrections or restore the historical worker architecture. Keep hardware
+activation blocked and CBF disabled by default. Document observed timing separately
+from hard real-time guarantees. This authorization supersedes synchronous-only
+restrictions below for this newly verified proposal architecture.
+
+## Collision/singularity extension (2026-11-01)
+
+The user confirmed the grilling design: hard self/inter-arm collision and full-task
+singularity constraints; adapt the pinned Franka description geometry including
+Hand/finger sweep, no cable/payload; independent synchronous arm owners with
+bounded fresh peer motion; connected boundary intervention preserving feasible
+sliding/retreat; stop if no verified command/state/timing contract remains.
+No automatic retreat/restart. Implement and profile in mock only; retain default-off
+switches and hardware activation block. Keep the hardware procedure concise.
+See docs/cbf/COLLISION_AND_SINGULARITY.md and AVOIDANCE_VERIFICATION.md.
+
+## New linked CBF roadmap (2026-11-01)
+
+The user now authorizes the new default-disabled `cbf_safety_filter` library
+from `docs/cbf/IMPLEMENTATION_ROADMAP.md`. This supersedes CBF removal only
+for the new linked numerical library. No historical coordinator/repair/cache
+architecture, no ROS torque transport, and no physical activation. Preserve
+nominal disabled control and existing optional controller switches.
+
 
 ## Optional controller limits override (2026-10-29)
 

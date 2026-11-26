@@ -72,6 +72,21 @@ class ConfigurationTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             recording_plan(config, arms, output_root_override="relative")
 
+    def test_cbf_diagnostics_are_recorded_only_for_enabled_arms(self):
+        data = dict(
+            self.config,
+            pipeline={},
+            cbf={"enabled": False, "config_file": "/unused.yaml"},
+            arm_settings={"right_arm": {"cbf": {"enabled": True}}},
+            recording={"include_default_topics": True, "output_root": str(self.root)},
+        )
+        path = self.write("cbf_runtime.yaml", data)
+        topics = recording_plan(path, load_arms(path)).topics
+        self.assertIn("/right_arm/cbf_status", topics)
+        self.assertIn("/right_arm/cbf_rejection", topics)
+        self.assertNotIn("/left_arm/cbf_status", topics)
+        self.assertNotIn("/left_arm/cbf_rejection", topics)
+
     def test_unified_recording_profile_and_namespaced_menu_input(self):
         data = dict(
             self.config,

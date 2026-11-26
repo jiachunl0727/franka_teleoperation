@@ -16,7 +16,6 @@ from rclpy.qos import DurabilityPolicy, QoSProfile
 from quest_teleop_interfaces.msg import (
     GripperStatus,
     QuestControllerState,
-    QuestButtonState,
 )
 from quest_teleop_interfaces.srv import CalibrateGripper
 
@@ -105,7 +104,7 @@ class HandWorkerTest(unittest.TestCase):
                      "-p", "controller_id:=" + controller,
                      "-p", "controller_state_topic:=" + prefix + "/raw",
                      "-p", "grasp_force_n:=5.0", "-p", "cable_diameter_m:=0.005",
-                     "-p", "mock_object_width_m:=0.005", "-p", "speed_mps:=0.1",
+                     "-p", "mock_object_width_m:=0.005", "-p", "close_speed_mps:=0.1",
                      "-p", "mock_operation_duration_ms:=20.0"],
                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
                 )
@@ -142,9 +141,6 @@ class HandWorkerTest(unittest.TestCase):
                         state.thumbstick_x = float(-inward if controller == "right" else inward)
                         state.grip_active = True
                         state.grip_value = 1.0 if old_inputs else 0.
-                        button = QuestButtonState()
-                        button.name, button.active, button.pressed = "thumbstick", True, old_inputs
-                        state.buttons = [button]
                         publisher.publish(state)
                         until = time.monotonic() + .01
                         while time.monotonic() < until:
@@ -207,7 +203,7 @@ class HandWorkerTest(unittest.TestCase):
                     node.destroy_node()
                 self.assertEqual(proc.returncode, 0, log_path.read_text())
 
-    def test_hardware_guard_prevents_connection(self):
+    def test_hardware_requires_ip_before_connecting(self):
         result = subprocess.run(
             [
                 "ros2",
@@ -217,15 +213,13 @@ class HandWorkerTest(unittest.TestCase):
                 "--ros-args",
                 "-p",
                 "backend:=hardware",
-                "-p",
-                "robot_ip:=192.0.2.1",
             ],
             capture_output=True,
             text=True,
             timeout=10,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("operator_confirm", result.stderr)
+        self.assertIn("robot_ip", result.stderr)
 
     def test_slow_reporting_cannot_delay_release_or_joystick_open(self):
         library = Path(os.environ["HAND_TEST_SLOW_PUBLISH_LIBRARY"])
@@ -257,9 +251,6 @@ class HandWorkerTest(unittest.TestCase):
                     s.grip_value = 0.0
                     s.thumbstick_active = True
                     s.thumbstick_x = .8 if joystick else -float(grip)
-                    b = QuestButtonState()
-                    b.name, b.active, b.pressed = "thumbstick", True, joystick
-                    s.buttons = [b]
                     pub.publish(s)
                 rclpy.spin_once(node, timeout_sec=0.001)
 

@@ -1,0 +1,3 @@
+source;share/teleop_gripper/environment/ament_prefix_path.sh
+source;share/teleop_gripper/environment/library_path.sh
+source;share/teleop_gripper/environment/path.sh

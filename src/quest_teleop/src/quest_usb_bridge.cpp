@@ -22,6 +22,7 @@
 #include <quest_teleop_interfaces/msg/quest_button_state.hpp>
 #include <quest_teleop_interfaces/msg/quest_controller_state.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -137,6 +138,8 @@ class QuestUsbBridge final : public rclcpp::Node {
     const int max_sync_age_ms = declare_parameter<int>("max_clock_sync_age_ms", 3000);
     const int max_future_ms = declare_parameter<int>("max_source_future_ms", 10);
     const int client_receive_timeout_ms = declare_parameter<int>("client_receive_timeout_ms", 500);
+    const std::string recording_status_topic =
+        declare_parameter<std::string>("recording_status_topic", "/quest/recording_status");
     if (command_timeout_ms <= 0 || max_uncertainty_ms <= 0 || max_sync_age_ms <= 0 ||
         max_future_ms < 0 || client_receive_timeout_ms <= 0) {
       throw std::invalid_argument(
@@ -152,6 +155,27 @@ class QuestUsbBridge final : public rclcpp::Node {
         create_publisher<Message>("~/left/controller_state", rclcpp::QoS(10));
     controller_publishers_[1] =
         create_publisher<Message>("~/right/controller_state", rclcpp::QoS(10));
+    recording_status_ = create_subscription<std_msgs::msg::String>(
+        recording_status_topic, rclcpp::QoS(1).transient_local(),
+        [this](std_msgs::msg::String::ConstSharedPtr message) {
+          try {
+            const auto status = json::parse(message->data);
+            const auto phase = status.at("phase").get<std::string>();
+            if (phase != "recording" && phase != "idle" && phase != "error")
+              return;
+            const bool active = phase == "recording";
+            bool changed = false;
+            {
+              std::lock_guard<std::mutex> lock(recording_mutex_);
+              changed = active != recording_active_;
+              recording_active_ = active;
+            }
+            if (changed)
+              send_recording_event(active);
+          } catch (const std::exception& error) {
+            RCLCPP_WARN(get_logger(), "Ignoring invalid recording status: %s", error.what());
+          }
+        });
     listener_fd_ = create_listener(bind_address, port);
     worker_ = std::thread([this] { accept_loop(); });
     RCLCPP_INFO(get_logger(), "Quest USB TCP bridge listening on %s:%d", bind_address.c_str(),
@@ -171,14 +195,26 @@ class QuestUsbBridge final : public rclcpp::Node {
   }
 
   ~QuestUsbBridge() override {
+    bool recording_active = false;
+    {
+      std::lock_guard<std::mutex> lock(recording_mutex_);
+      recording_active = recording_active_;
+      recording_active_ = false;
+    }
+    if (recording_active)
+      send_recording_event(false);
     stopping_.store(true);
     if (listener_fd_ >= 0) {
       shutdown(listener_fd_, SHUT_RDWR);
       close(listener_fd_);
       listener_fd_ = -1;
     }
-    if (client_fd_.load() >= 0)
-      shutdown(client_fd_.load(), SHUT_RDWR);
+    {
+      std::lock_guard<std::mutex> lock(socket_write_mutex_);
+      const int client = client_fd_.load();
+      if (client >= 0)
+        shutdown(client, SHUT_RDWR);
+    }
     if (worker_.joinable())
       worker_.join();
   }
@@ -241,10 +277,22 @@ class QuestUsbBridge final : public rclcpp::Node {
       client_fd_.store(client);
       waiting_logged_.store(false);
       RCLCPP_INFO(get_logger(), "Quest TCP client connected");
+      bool recording_active = false;
+      {
+        std::lock_guard<std::mutex> lock(recording_mutex_);
+        recording_active = recording_active_;
+      }
+      if (recording_active)
+        send_recording_event(true);
       consume_connection(client);
-      shutdown(client, SHUT_RDWR);
-      close(client);
-      client_fd_.store(-1);
+      {
+        std::lock_guard<std::mutex> lock(socket_write_mutex_);
+        if (client_fd_.load() == client) {
+          client_fd_.store(-1);
+          shutdown(client, SHUT_RDWR);
+          close(client);
+        }
+      }
       publish_disconnect();
       RCLCPP_WARN(get_logger(), "Quest TCP client disconnected; motion input invalidated");
     }
@@ -267,6 +315,28 @@ class QuestUsbBridge final : public rclcpp::Node {
     return true;
   }
 
+  bool send_packet(int fd, const json& packet) {
+    const std::string payload = packet.dump();
+    if (payload.empty() || payload.size() > kMaxPayload)
+      return false;
+    const uint32_t length = htonl(static_cast<uint32_t>(payload.size()));
+    std::string frame(sizeof(length), '\0');
+    std::memcpy(frame.data(), &length, sizeof(length));
+    frame += payload;
+    std::lock_guard<std::mutex> lock(socket_write_mutex_);
+    return client_fd_.load() == fd && send_all(fd, frame.data(), frame.size());
+  }
+
+  void send_recording_event(bool active) {
+    const int client = client_fd_.load();
+    if (client < 0)
+      return;
+    if (!send_packet(client, {{"version", 1},
+                              {"type", "recording_state"},
+                              {"event", active ? "started" : "ended"}}))
+      RCLCPP_DEBUG(get_logger(), "Quest recording cue was not delivered");
+  }
+
   void reply_clock_sync(int fd, const json& request) {
     if (request.at("version").get<int>() != 1)
       throw std::runtime_error("unsupported sync version");
@@ -282,21 +352,9 @@ class QuestUsbBridge final : public rclcpp::Node {
                      {"quest_send_time_ns", std::to_string(quest_send_ns)},
                      {"pc_receive_time_ns", std::to_string(pc_receive_ns)},
                      {"pc_send_time_ns", "0"}};
-    std::string payload = response.dump();
     const uint64_t pc_send_ns = pc_monotonic_ns();
-    const std::string placeholder = "\"pc_send_time_ns\":\"0\"";
-    const size_t send_time_field = payload.find(placeholder);
-    if (send_time_field == std::string::npos)
-      throw std::runtime_error("clock response serialization failed");
-    payload.replace(send_time_field, placeholder.size(),
-                    "\"pc_send_time_ns\":\"" + std::to_string(pc_send_ns) + "\"");
-    if (payload.empty() || payload.size() > kMaxPayload)
-      throw std::runtime_error("clock reply too large");
-    const uint32_t length = htonl(static_cast<uint32_t>(payload.size()));
-    std::string frame(sizeof(length), '\0');
-    std::memcpy(frame.data(), &length, sizeof(length));
-    frame += payload;
-    if (!send_all(fd, frame.data(), frame.size()))
+    response["pc_send_time_ns"] = std::to_string(pc_send_ns);
+    if (!send_packet(fd, response))
       throw std::runtime_error("clock reply send failed");
     RCLCPP_INFO(get_logger(), "Clock sync reply sent: sync_id=%s", sync_id.c_str());
   }
@@ -466,12 +524,11 @@ class QuestUsbBridge final : public rclcpp::Node {
       input_fields.push_back("thumbstick_xy");
       input_fields.push_back("thumbstick_active");
     }
+    // Older version 1 APKs may include a click pair. Validate its wire
+    // format for compatibility and leave it out of the ROS button list.
     if (inputs.contains("thumbstick_click") || inputs.contains("thumbstick_click_active")) {
-      quest_teleop_interfaces::msg::QuestButtonState button;
-      button.name = "thumbstick";
-      button.pressed = boolean(inputs.at("thumbstick_click"), "thumbstick_click");
-      button.active = boolean(inputs.at("thumbstick_click_active"), "thumbstick_click_active");
-      out.buttons.push_back(button);
+      boolean(inputs.at("thumbstick_click"), "thumbstick_click");
+      boolean(inputs.at("thumbstick_click_active"), "thumbstick_click_active");
       input_fields.push_back("thumbstick_click");
       input_fields.push_back("thumbstick_click_active");
     }
@@ -528,8 +585,12 @@ class QuestUsbBridge final : public rclcpp::Node {
 
   rclcpp::Publisher<Message>::SharedPtr publisher_;
   std::array<rclcpp::Publisher<Message>::SharedPtr, 2> controller_publishers_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr recording_status_;
   int listener_fd_{-1};
   std::atomic<int> client_fd_{-1};
+  std::mutex socket_write_mutex_;
+  std::mutex recording_mutex_;
+  bool recording_active_{false};
   std::atomic<bool> waiting_logged_{false};
   rclcpp::TimerBase::SharedPtr connection_watchdog_;
   std::atomic<bool> stopping_{false};

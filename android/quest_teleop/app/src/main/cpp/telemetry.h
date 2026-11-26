@@ -1,6 +1,7 @@
 #pragma once
 #include "tracking.h"
 #include "usb_transport.h"
+#include <functional>
 
 namespace quest_usb {
 inline float unit_input(float value) {
@@ -37,6 +38,9 @@ class LocalDeadman {
 
 class QuestTelemetry {
  public:
+  explicit QuestTelemetry(std::function<void(const std::string&)> recording_event = {})
+      : transport_(std::move(recording_event)) {}
+
   void submit(const TrackingFrame& frame) {
     reference_space_generation_ = frame.recenter_count;
     focused_ = frame.session_focused;
@@ -53,7 +57,7 @@ class QuestTelemetry {
         in.trigger, in.trigger_active, in.squeeze, in.squeeze_active,
         right && in.primary, right && in.primary_active, right && in.secondary, right && in.secondary_active,
         !right && in.primary, !right && in.primary_active, !right && in.secondary, !right && in.secondary_active,
-        !right && in.menu, !right && in.menu_active, in.thumb_click, in.thumb_click_active,
+        !right && in.menu, !right && in.menu_active,
         in.thumb_x, in.thumb_y, in.thumb_active);
     }
   }
@@ -70,7 +74,6 @@ class QuestTelemetry {
                      bool linear_valid, bool angular_valid, float trigger, bool trigger_active,
                      float grip, bool grip_active, bool a, bool a_active, bool b, bool b_active,
                      bool x, bool x_active, bool y, bool y_active, bool menu, bool menu_active,
-                     bool thumb_click, bool thumb_click_active,
                      float thumb_x, float thumb_y, bool thumb_active) {
     std::ostringstream json;
     const uint64_t sequence = sequence_++;
@@ -101,8 +104,6 @@ class QuestTelemetry {
          << ",\"trigger_active\":" << (trigger_active ? "true" : "false")
          << ",\"grip\":" << unit_input(grip)
          << ",\"grip_active\":" << (grip_active ? "true" : "false")
-         << ",\"thumbstick_click\":" << (thumb_click ? "true" : "false")
-         << ",\"thumbstick_click_active\":" << (thumb_click_active ? "true" : "false")
          << ",\"thumbstick_xy\":[" << signed_input(thumb_x) << ',' << signed_input(thumb_y) << ']'
          << ",\"thumbstick_active\":" <<
              (thumb_active && std::isfinite(thumb_x) && std::isfinite(thumb_y) &&

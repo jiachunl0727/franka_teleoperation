@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/test_nullspace.dir/test/test_nullspace.cpp.o -o test_nullspace  gtest/libgtest_main.a gtest/libgtest.a libcontroller_manager.a -pthread /usr/lib/x86_64-linux-gnu/libtinyxml2.so 

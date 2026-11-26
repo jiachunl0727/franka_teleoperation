@@ -1,0 +1,32 @@
+# Two independent robot-free mappers. No FCI or gripper worker is started.
+arms:
+  panda_left:
+    namespace: /panda_left
+    controller: left  # Choices: left, right.
+    base_frame: panda_left/panda_link0
+    reference_to_robot_xyzw: [0.0, 0.0, 0.0, 1.0]
+    # Independent mapped pose and velocity processing (none, low_pass, four_pole).
+    pose_filter: none
+    velocity_filter: low_pass
+    pose_filter_cutoff_hz: 10.0
+    velocity_filter_cutoff_hz: 10.0
+    # Interpolation: none, ptp_polynomial (septic), spline (quintic).
+    pose_interpolation: none
+    velocity_interpolation: none
+    pose_interpolation_duration_ms: 40.0
+    velocity_interpolation_duration_ms: 40.0
+  panda_right:
+    namespace: /panda_right
+    controller: right  # Choices: left, right.
+    base_frame: panda_right/panda_link0
+    reference_to_robot_xyzw: [0.0, 0.0, 0.0, 1.0]
+    # Independent mapped pose and velocity processing (none, low_pass, four_pole).
+    pose_filter: none
+    velocity_filter: low_pass
+    pose_filter_cutoff_hz: 10.0
+    velocity_filter_cutoff_hz: 10.0
+    # Interpolation: none, ptp_polynomial (septic), spline (quintic).
+    pose_interpolation: none
+    velocity_interpolation: none
+    pose_interpolation_duration_ms: 40.0
+    velocity_interpolation_duration_ms: 40.0

@@ -102,6 +102,8 @@ class TelemetryTest(unittest.TestCase):
             self.assertEqual(p['pose']['orientation_xyzw'], [0, 0, 0, 1])
             inputs, twist = p['inputs'], p['native_twist']
             self.assertTrue(inputs['thumbstick_active'])
+            self.assertNotIn('thumbstick_click', inputs)
+            self.assertNotIn('thumbstick_click_active', inputs)
             if hand == 'left':
                 self.assertAlmostEqual(inputs['thumbstick_xy'][0], .6, places=6)
                 self.assertAlmostEqual(inputs['thumbstick_xy'][1], -.25, places=6)

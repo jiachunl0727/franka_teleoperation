@@ -8,8 +8,10 @@
 #include <sstream>
 
 #include "teleop_controllers/actuator_limits.hpp"
+#include "teleop_controllers/inverse_dynamics_controller.hpp"
 #include "teleop_controllers/legacy_pose.hpp"
 #include "teleop_controllers/model_snapshot.hpp"
+#include "teleop_controllers/urdf_model.hpp"
 using namespace teleop_controllers;
 namespace {
 thread_local bool track_allocations = false;
@@ -61,6 +63,41 @@ TEST(ActuatorLimits, DefaultsUsePublishedFciCeilingsAndScalesAreValidated) {
     scales.torque_rate = invalid;
     EXPECT_FALSE(scales.valid());
   }
+}
+
+TEST(InverseDynamics, RealtimeComputationDoesNotAllocate) {
+  ArmState s;
+  s.q = Eigen::Map<const Vector7>(kHome.data());
+  s.jacobian.leftCols<6>().setIdentity();
+  s.jacobian.col(6).setConstant(.1);
+  InverseDynamicsParameters p;
+  InverseDynamicsController law(p);
+  const CartesianReference target;
+  law.compute(s, target, .001);
+  bool valid = true;
+  allocations = 0;
+  track_allocations = true;
+  for (int i = 0; i < 1000; ++i)
+    valid &= law.compute(s, target, .001).fault == StateFault::none;
+  track_allocations = false;
+  EXPECT_TRUE(valid);
+  EXPECT_EQ(allocations, size_t{0});
+}
+
+TEST(UrdfModel, RealtimeEvaluationDoesNotAllocate) {
+  UrdfPandaModel model(TELEOP_URDF_MODEL_FILE);
+  UrdfModelOutput output;
+  const Vector7 q = Eigen::Map<const Vector7>(kHome.data());
+  const Vector7 dq = Vector7::Constant(.2);
+  const auto tool = model.standard_flange_to_ee();
+  bool valid = true;
+  allocations = 0;
+  track_allocations = true;
+  for (int i = 0; i < 1000; ++i)
+    valid &= model.evaluate(q, dq, tool, output);
+  track_allocations = false;
+  EXPECT_TRUE(valid);
+  EXPECT_EQ(allocations, size_t{0});
 }
 
 TEST(ModelConversion, LegacyRoundedEndEffectorRotationPassesOnlyAfterBoundedConversion) {

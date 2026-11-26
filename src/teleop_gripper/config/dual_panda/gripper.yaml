@@ -1,0 +1,12 @@
+# Hand joystick, motion and watchdog tuning. Distances are in metres.
+hand:
+  joystick_engage: 0.4
+  joystick_neutral: 0.2
+  close_width_m: 0.0
+  worker_poll_ms: 1.0
+  open_speed_mps: 0.07
+  close_speed_mps: 0.03
+  open_width_m: -1.0
+  command_timeout_ms: 100.0
+  max_clock_uncertainty_ms: 10.0
+  mock_operation_duration_ms: 100.0

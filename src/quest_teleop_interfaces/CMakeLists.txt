@@ -13,6 +13,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ControllerStatus.msg"
   "msg/TrackingSample.msg"
   "msg/GripperStatus.msg"
+  "msg/GripperWidth.msg"
   "msg/HomingStatus.msg"
   "srv/CalibrateGripper.srv"
   DEPENDENCIES std_msgs geometry_msgs

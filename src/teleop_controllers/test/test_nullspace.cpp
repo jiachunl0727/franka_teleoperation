@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "teleop_controllers/cartesian_impedance_controller.hpp"
+#include "teleop_controllers/cartesian_pd_controller.hpp"
 #include "teleop_controllers/orientation_only_controller.hpp"
 namespace ft = teleop_controllers;
 namespace {
@@ -24,10 +24,9 @@ ft::CartesianReference reference(const ft::ArmState& s) {
 }  // namespace
 TEST(Nullspace, DynamicProjectionPreservesTaskAccelerationWithNonidentityMass) {
   auto s = state();
-  ft::CartesianImpedanceParameters p;
-  p.nullspace_enabled = true;
+  ft::CartesianPdParameters p;
   p.nullspace_ramp_seconds = .001;
-  ft::CartesianImpedanceController law(p);
+  ft::CartesianPdController law(p);
   auto out = law.compute(s, reference(s), .001);
   ASSERT_EQ(out.fault, ft::StateFault::none);
   ASSERT_GT(out.torque.norm(), .01);
@@ -36,30 +35,25 @@ TEST(Nullspace, DynamicProjectionPreservesTaskAccelerationWithNonidentityMass) {
   const ft::Vector7 bias = p.nullspace_stiffness * (p.home_joint_position - s.q);
   EXPECT_GT(out.torque.dot(bias), 0);
 }
-TEST(Nullspace, UniformCapRankLossAndDisabledLawStayFinite) {
+TEST(Nullspace, UniformCapAndRankLossStayFinite) {
   auto s = state();
   s.jacobian.row(5).setZero();
-  ft::CartesianImpedanceParameters p;
-  p.nullspace_enabled = true;
+  ft::CartesianPdParameters p;
   p.nullspace_max_torque = .05;
   p.nullspace_ramp_seconds = .001;
-  ft::CartesianImpedanceController law(p);
+  ft::CartesianPdController law(p);
   const auto out = law.compute(s, reference(s), .001);
   EXPECT_TRUE(out.torque.allFinite());
   EXPECT_LE(out.torque.cwiseAbs().maxCoeff(), .05 + 1e-12);
   EXPECT_LT((s.jacobian * s.mass.ldlt().solve(out.torque)).norm(), 1e-10);
-  p.nullspace_enabled = false;
-  ft::CartesianImpedanceController off(p);
-  EXPECT_TRUE(off.compute(s, reference(s), .001).torque.isZero());
 }
 TEST(Nullspace, RampResetsInBothCartesianModesAndUsesConfiguredHome) {
   auto s = state();
-  ft::CartesianImpedanceParameters p;
-  p.nullspace_enabled = true;
+  ft::CartesianPdParameters p;
   p.home_joint_position = s.q;
   p.home_joint_position[6] += .4;
   ASSERT_TRUE(p.valid());
-  ft::CartesianImpedanceController law(p);
+  ft::CartesianPdController law(p);
   ft::OrientationOnlyController orientation(p);
   const auto first = law.compute(s, reference(s), .001).torque;
   for (int i = 0; i < 300; ++i)
@@ -77,11 +71,10 @@ TEST(Nullspace, LimitRepulsionAndInvalidMassAreHandled) {
   s.mass.setIdentity();
   s.jacobian.setZero();
   s.q[0] = teleop_controllers::kJointLower[0] + .01;
-  ft::CartesianImpedanceParameters p;
+  ft::CartesianPdParameters p;
   p.home_joint_position = s.q;
-  p.nullspace_enabled = true;
   p.nullspace_ramp_seconds = .001;
-  ft::CartesianImpedanceController law(p);
+  ft::CartesianPdController law(p);
   EXPECT_GT(law.compute(s, reference(s), .001).torque[0], 0);
   s.mass(0, 0) = -1;
   EXPECT_NE(law.compute(s, reference(s), .001).fault, ft::StateFault::none);
@@ -90,11 +83,11 @@ TEST(Nullspace, LimitRepulsionAndInvalidMassAreHandled) {
 }
 
 TEST(CartesianEffort, LargePoseAndVelocityErrorsHaveBoundedWrench) {
-  ft::CartesianImpedanceParameters p;
-  ft::CartesianImpedanceController unlimited(p);
+  ft::CartesianPdParameters p;
+  ft::CartesianPdController unlimited(p);
   EXPECT_FALSE(p.cartesian_wrench_limits_enabled);
   p.cartesian_wrench_limits_enabled = true;
-  ft::CartesianImpedanceController law(p);
+  ft::CartesianPdController law(p);
   ft::ArmState s;
   s.jacobian.leftCols<6>().setIdentity();
   auto target = reference(s);

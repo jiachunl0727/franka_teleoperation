@@ -7,6 +7,7 @@
 #include <future>
 #include <memory>
 #include <quest_teleop_interfaces/msg/gripper_status.hpp>
+#include <quest_teleop_interfaces/msg/gripper_width.hpp>
 #include <quest_teleop_interfaces/msg/quest_controller_state.hpp>
 #include <quest_teleop_interfaces/srv/calibrate_gripper.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -44,7 +45,6 @@ int main(int argc, char* argv[]) {
   try {
     const auto backend = node->declare_parameter<std::string>("backend", "mock");
     const auto ip = node->declare_parameter<std::string>("robot_ip", "");
-    const auto confirmed = node->declare_parameter<bool>("operator_confirm", false);
     const auto calibrate_on_start = node->declare_parameter<bool>("calibrate_on_start", false);
     const auto controller = node->declare_parameter<std::string>("controller_id", "right");
     const auto topic = node->declare_parameter<std::string>(
@@ -53,10 +53,10 @@ int main(int argc, char* argv[]) {
         (controller != "right" && controller != "left"))
       throw std::invalid_argument("invalid backend/controller ID");
     const bool hardware = backend == "hardware";
-    if (hardware && (!confirmed || ip.empty()))
-      throw std::invalid_argument("hardware Hand requires robot_ip and operator_confirm:=true");
+    if (hardware && ip.empty())
+      throw std::invalid_argument("hardware Hand requires robot_ip");
     ft::HandParameters p;
-    p.speed = node->declare_parameter("speed_mps", p.speed);
+    p.speed = node->declare_parameter("close_speed_mps", p.speed);
     p.open_speed = node->declare_parameter("open_speed_mps", p.open_speed);
     p.close_width = node->declare_parameter("close_width_m", p.close_width);
     p.grasp_force = node->declare_parameter("grasp_force_n", p.grasp_force);
@@ -65,15 +65,6 @@ int main(int argc, char* argv[]) {
     p.open_width = node->declare_parameter("open_width_m", p.open_width);
     p.engage = node->declare_parameter("joystick_engage", p.engage);
     p.neutral = node->declare_parameter("joystick_neutral", p.neutral);
-    // Old profiles may still contain retired side-grip/click/retry settings.
-    for (const auto* legacy : {"grasp_width_m", "epsilon_inner_m", "epsilon_outer_m", "grip_press",
-                               "grip_release", "grip_debounce_ms", "close_retry_interval_ms",
-                               "grip_click_max_ms", "grip_double_click_ms"}) {
-      node->declare_parameter<double>(legacy, -1.0);
-      if (node->get_node_parameters_interface()->get_parameter_overrides().count(legacy))
-        RCLCPP_WARN(node->get_logger(), "Retired Hand setting %s is ignored by joystick control",
-                    legacy);
-    }
     const double poll = node->declare_parameter("worker_poll_ms", 1.0);
     const double timeout = node->declare_parameter("command_timeout_ms", 100.0);
     const double uncertainty = node->declare_parameter("max_clock_uncertainty_ms", 10.0);
@@ -113,6 +104,8 @@ int main(int argc, char* argv[]) {
     auto events = node->create_publisher<quest_teleop_interfaces::msg::GripperStatus>(
         "gripper_events", rclcpp::QoS(1).transient_local());
     ft::HandReporting reporting(events);
+    auto live_width = node->create_publisher<quest_teleop_interfaces::msg::GripperWidth>(
+        "gripper_width", rclcpp::QoS(1).best_effort());
     auto publish = [&](const std::string& detail = "") {
       quest_teleop_interfaces::msg::GripperStatus status;
       status.header.stamp = node->now();
@@ -186,7 +179,7 @@ int main(int argc, char* argv[]) {
           c.value = ft::inward_joystick(state->thumbstick_x, controller == "right");
           c.joystick_active = state->thumbstick_active;
           // Finger control depends on the available joystick, not Cartesian
-          // tracking, trigger, side grip, or thumbstick click.
+          // tracking, trigger, or side grip.
           c.valid = state->connection_valid && state->session_focused && state->source_time_valid &&
                     state->clock_sync_valid && state->reference_space == "LOCAL" &&
                     !state->session_id.empty() && state->session_id.size() <= 64 &&
@@ -273,7 +266,7 @@ int main(int argc, char* argv[]) {
     publish();
     if (calibrate_on_start) {
       RCLCPP_INFO(node->get_logger(), "Starting empty-hand calibration requested by launch");
-      issue(core.calibrate(true, !hardware || confirmed));
+      issue(core.calibrate(true, true));
     } else {
       RCLCPP_INFO(node->get_logger(), "%s Hand worker; manual empty-hand calibration required",
                   backend.c_str());
@@ -297,15 +290,46 @@ int main(int argc, char* argv[]) {
         rclcpp::shutdown();
       }
     });
+    // Dedicated UDP reader keeps Hand operations and ROS callbacks independent
+    // of sensor updates. FrankaHand serializes readOnce with operation readback.
+    std::thread width_thread;
     try {
+      if (hardware && std::max(p.speed, p.open_speed) <= .4) {
+        width_thread = std::thread([&] {
+          while (polling.load() && rclcpp::ok()) {
+            bool calibrated;
+            {
+              std::lock_guard<std::mutex> lock(control_mutex);
+              calibrated = core.calibrated() && operation != ft::HandOperation::calibrate;
+            }
+            if (calibrated) {
+              try {
+                quest_teleop_interfaces::msg::GripperWidth sample;
+                sample.sample_time_pc_monotonic_ns = monotonic_ns();
+                if (const auto width = worker.read_live_width()) {
+                  sample.width_m = width->width;
+                  live_width->publish(sample);
+                }
+              } catch (const std::exception&) {
+                // Age out the sample and let the consumer use full travel.
+              }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+          }
+        });
+      }
       rclcpp::spin(node);
     } catch (...) {
       polling.store(false);
       poll_thread.join();
+      if (width_thread.joinable())
+        width_thread.join();
       throw;
     }
     polling.store(false);
     poll_thread.join();
+    if (width_thread.joinable())
+      width_thread.join();
     issue(core.shutdown());
     if (polling_failure)
       std::rethrow_exception(polling_failure);

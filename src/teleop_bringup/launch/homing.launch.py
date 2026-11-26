@@ -14,7 +14,7 @@ def generate_launch_description():
                 PythonLaunchDescriptionSource(
                     str(
                         Path(get_package_share_directory("teleop_bringup"))
-                        / "launch/cartesian_impedance_controller.launch.py"
+                        / "launch/cartesian_pd_controller.launch.py"
                     )
                 ),
                 launch_arguments={"homing_enabled": "true"}.items(),

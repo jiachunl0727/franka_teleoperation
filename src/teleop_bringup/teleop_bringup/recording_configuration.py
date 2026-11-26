@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import uuid
-from teleop_bringup.configuration import full_topic, read_mapping, boolean, _TOKEN
+from teleop_bringup.configuration import full_topic, boolean, _TOKEN
 
 
 def default_recording_topics(arms):
@@ -19,6 +19,7 @@ def default_recording_topics(arms):
                 p["measured_pose_topic"],
                 full_topic("tracking_samples", arm.namespace),
                 full_topic("gripper_events", arm.namespace),
+                full_topic("gripper_width", arm.namespace),
             ]
         )
     return list(dict.fromkeys(topics))
@@ -32,12 +33,13 @@ class RecordingPlan:
 
 
 def recording_plan(path, arms, topics_override="", output_root_override=""):
-    config = read_mapping(path)
     from teleop_bringup.runtime_configuration import (
         unified_settings,
         bridge_controller_topic,
+        load_runtime_document,
     )
 
+    config = load_runtime_document(path)
     source = config
     if "pipeline" in config:
         recording = unified_settings(config)[2]
@@ -65,9 +67,18 @@ def recording_plan(path, arms, topics_override="", output_root_override=""):
         if boolean(
             config.get("include_default_topics", True), "include_default_topics"
         ):
+            from teleop_bringup.cbf_configuration import merged_selection
+
+            cbf_topics = [
+                full_topic(topic, arm.namespace)
+                for arm in arms
+                if merged_selection(source, arm.name)["enabled"]
+                for topic in ("cbf_status", "cbf_rejection")
+            ]
             topics = (
                 [bridge_controller_topic(source, "left")]
                 + default_recording_topics(arms)
+                + cbf_topics
                 + topics
             )
     if not isinstance(topics, list) or not topics:

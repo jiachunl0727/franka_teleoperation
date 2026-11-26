@@ -1,11 +1,19 @@
 """Validate feature settings and per-arm overrides shared by feature launches."""
 
-from teleop_bringup.configuration import read_mapping
+from pathlib import Path
+
+from ament_index_python.packages import get_package_share_directory
+from teleop_bringup.configuration import _DEFAULTS as MAPPER_DEFAULTS, read_mapping
 
 ALLOWED = {
     "controller": {
+        "dynamics_model_file",
+        "cartesian_control_law",
+        "inverse_dynamics_stiffness",
+        "inverse_dynamics_damping_ratio",
+        "inverse_dynamics_nullspace_stiffness",
+        "inverse_dynamics_nullspace_damping",
         "home_joint_position",
-        "nullspace_enabled",
         "nullspace_stiffness",
         "nullspace_damping",
         "nullspace_joint_limit_gain",
@@ -30,9 +38,6 @@ ALLOWED = {
         "maximum_torque_rate",
         "torque_limit_scale",
         "torque_rate_limit_scale",
-        "tool_offset_m",
-        "envelope_margin_m",
-        "envelope_center",
         "torque_limits",
         "homing_speed_factor",
         "homing_timeout_seconds",
@@ -45,8 +50,9 @@ ALLOWED = {
         "hold_damping",
         "hold_stiffness_ramp_seconds",
     },
+    "cbf": {"enabled", "config_file", "hardware_mode"},
     "hand": {
-        "speed_mps",
+        "close_speed_mps",
         "open_speed_mps",
         "grasp_force_n",
         "cable_diameter_m",
@@ -54,18 +60,9 @@ ALLOWED = {
         "joystick_engage",
         "joystick_neutral",
         "mock_object_width_m",
-        "grasp_width_m",
-        "epsilon_inner_m",
-        "epsilon_outer_m",
         "open_width_m",
-        "grip_press",
-        "grip_release",
-        "grip_debounce_ms",
         "close_width_m",
-        "close_retry_interval_ms",
         "worker_poll_ms",
-        "grip_click_max_ms",
-        "grip_double_click_ms",
         "command_timeout_ms",
         "max_clock_uncertainty_ms",
         "mock_operation_duration_ms",
@@ -77,9 +74,57 @@ def validate_avoidance(values, section):
     """Reject malformed new control/safety settings before opening an owner."""
     import math
 
-    boolean = "nullspace_enabled"
+    if "dynamics_model_file" in values:
+        from pathlib import Path
+
+        resource = values["dynamics_model_file"]
+        if (
+            not isinstance(resource, str)
+            or not resource
+            or not (
+                Path(resource).is_absolute()
+                or (
+                    resource.startswith("package://")
+                    and len(resource[10:].split("/", 1)) == 2
+                    and all(resource[10:].split("/", 1))
+                )
+            )
+        ):
+            raise ValueError(
+                "controller.dynamics_model_file must be absolute or a package resource"
+            )
+
+    if "cartesian_control_law" in values and values["cartesian_control_law"] not in (
+        "cartesian_pd",
+        "inverse_dynamics",
+    ):
+        raise ValueError(
+            "controller.cartesian_control_law must be cartesian_pd/inverse_dynamics"
+        )
+    for key, count, allow_zero in (
+        ("inverse_dynamics_stiffness", 6, False),
+        ("inverse_dynamics_nullspace_stiffness", 7, True),
+        ("inverse_dynamics_nullspace_damping", 7, True),
+    ):
+        if key in values:
+            value = values[key]
+            if (
+                not isinstance(value, list)
+                or len(value) != count
+                or any(
+                    isinstance(v, bool)
+                    or not isinstance(v, (int, float))
+                    or not math.isfinite(v)
+                    or v < 0
+                    or (v == 0 and not allow_zero)
+                    for v in value
+                )
+            ):
+                raise ValueError(
+                    f"controller.{key} requires {count} finite {'nonnegative' if allow_zero else 'positive'} values"
+                )
+
     for key in (
-        boolean,
         "reference_shaping_enabled",
         "tracking_protection_enabled",
         "cartesian_wrench_limits_enabled",
@@ -88,7 +133,7 @@ def validate_avoidance(values, section):
             raise ValueError(f"{section}.{key} must be true/false")
     prefix = "nullspace_"
     for key, value in values.items():
-        if (key.startswith(prefix) and key != boolean) or key in {
+        if key.startswith(prefix) or key in {
             "reference_linear_speed",
             "reference_angular_speed",
             "reference_linear_acceleration",
@@ -97,6 +142,7 @@ def validate_avoidance(values, section):
             "tracking_orientation_limit",
             "cartesian_force_limit",
             "cartesian_moment_limit",
+            "inverse_dynamics_damping_ratio",
         }:
             if (
                 isinstance(value, bool)
@@ -131,7 +177,7 @@ def validate_avoidance(values, section):
 
 
 def load_runtime(path, arms):
-    data = feature_document(read_mapping(path))
+    data = feature_document(load_runtime_document(path))
     if set(data) - (set(ALLOWED) | {"arm_settings"}):
         raise ValueError("unknown runtime configuration section")
     for key, allowed in ALLOWED.items():
@@ -140,6 +186,10 @@ def load_runtime(path, arms):
             raise ValueError(f"unknown or invalid {key} setting")
         if key == "controller":
             validate_avoidance(section, key)
+        if key == "cbf":
+            from teleop_bringup.cbf_configuration import validate_selection
+
+            validate_selection(section)
     local = data.get("arm_settings", {})
     if not isinstance(local, dict) or set(local) - {a.name for a in arms}:
         raise ValueError("arm_settings contains unknown arm names")
@@ -147,14 +197,23 @@ def load_runtime(path, arms):
         if not isinstance(settings, dict) or set(settings) - {
             "controller",
             "hand",
+            "cbf",
         }:
             raise ValueError(f"{name}: invalid arm_settings")
-        for section in ("controller", "hand"):
+        for section in ("controller", "hand", "cbf"):
             values = settings.get(section, {})
             if not isinstance(values, dict) or set(values) - ALLOWED[section]:
                 raise ValueError(f"{name}: invalid {section} override")
             if section == "controller":
                 validate_avoidance(values, section)
+            if section == "cbf":
+                from teleop_bringup.cbf_configuration import validate_selection
+
+                validate_selection(values)
+    from teleop_bringup.cbf_configuration import merged_selection
+
+    for arm in arms:
+        merged_selection(data, arm.name)
     return data
 
 
@@ -194,6 +253,76 @@ RECORDING_DEFAULTS = dict(
 )
 UNIFIED_KEYS = set(ALLOWED) | {"pipeline", "quest", "arms", "arm_settings", "recording"}
 
+PROFILE_SECTIONS = ("quest", "controller", "hand", "recording")
+
+
+def _profile_path(reference, runtime_path):
+    if not isinstance(reference, str) or not reference:
+        raise ValueError("profile path must be a nonempty string")
+    if reference.startswith("package://"):
+        package, _, relative = reference[len("package://") :].partition("/")
+        asset = Path(relative)
+        if not package or not relative or asset.is_absolute() or ".." in asset.parts:
+            raise ValueError(f"invalid package profile path: {reference}")
+        return Path(get_package_share_directory(package)) / asset
+    return runtime_path.parent / Path(reference).expanduser()
+
+
+def _profile_mapping(value, name, allowed=None):
+    if not isinstance(value, dict) or (allowed is not None and set(value) - allowed):
+        raise ValueError(f"unknown or invalid {name} setting")
+    return value
+
+
+def load_runtime_document(path):
+    """Resolve package profiles into the existing runtime schema before validation."""
+    path = Path(path).expanduser().resolve()
+    data = read_mapping(path)
+    for section in PROFILE_SECTIONS:
+        inline = data.get(section)
+        if not isinstance(inline, dict) or "config_file" not in inline:
+            continue
+        if "pipeline" not in data:
+            raise ValueError("profile references require a combined runtime with a pipeline mapping")
+        reference = inline.pop("config_file")
+        source = read_mapping(_profile_path(reference, path))
+        if section in ("controller", "hand"):
+            _profile_mapping(source, f"{section} profile", {section})
+            if section not in source:
+                raise ValueError(f"{section} profile requires a {section} mapping")
+            defaults = _profile_mapping(
+                source[section], f"{section} profile", ALLOWED[section]
+            )
+            data[section] = {**defaults, **inline}
+        elif section == "recording":
+            defaults = _profile_mapping(source, "recording profile", set(RECORDING_DEFAULTS))
+            data[section] = {**defaults, **inline}
+        else:
+            _profile_mapping(source, "quest profile", {"bridge", "mapper", "mapper_by_controller"})
+            quest = _profile_mapping(inline, "quest", {"bridge"})
+            bridge = _profile_mapping(
+                source.get("bridge", {}), "bridge profile", set(BRIDGE_DEFAULTS)
+            )
+            inline = _profile_mapping(quest.get("bridge", {}), "quest.bridge")
+            data["quest"] = {"bridge": {**bridge, **inline}}
+            mapper_keys = set(MAPPER_DEFAULTS) | {"twist_filter_cutoff_hz"}
+            mapper = _profile_mapping(source.get("mapper", {}), "mapper profile", mapper_keys)
+            by_controller = _profile_mapping(
+                source.get("mapper_by_controller", {}),
+                "mapper_by_controller",
+                {"left", "right"},
+            )
+            for side, values in by_controller.items():
+                _profile_mapping(values, f"{side} mapper profile", mapper_keys)
+            arms = _profile_mapping(data.get("arms", {}), "arms")
+            for name, values in arms.items():
+                arm = _profile_mapping(values, f"{name} arm")
+                side = arm.get("controller", "right")
+                if side not in ("left", "right"):
+                    raise ValueError(f"{name}: controller must be left or right")
+                arms[name] = {**mapper, **by_controller.get(side, {}), **arm}
+    return data
+
 
 def unified_settings(data):
     """Validate the combined document before any launch can open hardware."""
@@ -206,9 +335,7 @@ def unified_settings(data):
         raise ValueError("unified runtime requires a nonempty arms mapping")
     raw = data.get("pipeline", {})
     if set(raw) - set(PIPELINE_DEFAULTS):
-        raise ValueError(
-            "unknown pipeline setting; operator_confirm is a launch-only confirmation"
-        )
+        raise ValueError("unknown pipeline setting")
     pipeline = dict(PIPELINE_DEFAULTS, **raw)
     for key, default in PIPELINE_DEFAULTS.items():
         if isinstance(default, bool) and not isinstance(pipeline[key], bool):

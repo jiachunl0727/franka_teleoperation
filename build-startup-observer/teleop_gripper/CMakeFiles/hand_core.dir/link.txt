@@ -1,0 +1,2 @@
+/usr/bin/ar qc libhand_core.a CMakeFiles/hand_core.dir/src/hand_core.cpp.o
+/usr/bin/ranlib libhand_core.a

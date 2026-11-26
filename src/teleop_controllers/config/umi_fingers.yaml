@@ -1,0 +1,21 @@
+# User-confirmed installation: retained metal fingers; gripping-face mounting;
+# each printed attachment including its screw weighs approximately 5 g.
+version: 1
+mesh_sha256: 8a042fc254b988c7af7e025dddf79361ea7edec7f7eed315f7ee1de94081ff19
+mesh_scale_m: 0.001
+mass_per_finger_kg: 0.005
+# Stock finger frame: screw axis at z=45 mm (41 mm from mounting plane,
+# whose mesh offset is 4 mm); metal gripping face at y=9.4 mm.
+# Franka Hand manual R50010/1.1, figure 5.6, checked against pinned finger mesh.
+stock_finger_mount_xyz_m: [0.0, 0.0094, 0.045]
+# Mesh X is the screw axis. Its metal-facing plane is x=23.8195 mm.
+# Cylinder axis in STL YZ: centre y=6.45, z=69.9323 mm. STL -Z points to tip.
+# The ~70 mm CAD distance agrees with the operator's approximate 72 mm.
+mesh_mount_xyz_m: [0.0238195486, 0.0064499998, 0.0699323334]
+# Fixed 7-DOF dynamics approximation; no Hand-width feedback in the arm owner.
+# The collision cover independently encloses all per-finger positions below.
+reference_opening_per_finger_m: 0.0
+opening_per_finger_range_m: [0.0, 0.04]
+# Covers the approximate screw-to-tip measurement discrepancy, separately
+# from the 5 mm table clearance. Does not model arbitrary soft deformation.
+mount_uncertainty_m: 0.003

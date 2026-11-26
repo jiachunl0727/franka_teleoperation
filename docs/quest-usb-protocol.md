@@ -9,6 +9,20 @@ UTF-8 JSON payload (exactly payload_length bytes)
 
 Maximum payload is 4096 bytes. Reject zero/oversized lengths, malformed JSON, unsupported versions/types, invalid arrays/scalars, and out-of-order input. A TCP connection carries one OpenXR session. Reconnecting the same running app may retain its session ID and increasing sequence numbers; input release gates still reset. Never replay buffered commands after reconnect.
 
+The connection is full-duplex. In addition to Quest input and clock-sync
+replies, the PC can send recording-state events to the app:
+
+```json
+{"version":1,"type":"recording_state","event":"started"}
+{"version":1,"type":"recording_state","event":"ended"}
+```
+
+The bridge derives these events from the recorder's ROS status, sends the active
+state to a newly connected app, and sends an end event on orderly bridge
+shutdown if a recording is still active. The Quest app speaks the corresponding
+recording cue through Android text-to-speech. It deduplicates repeated state
+events across TCP reconnections.
+
 The native transport retries connection every 250 ms independently of OpenXR
 sample production. It can establish clock synchronization before fresh controller
 frames are available; a clock-only connection cannot authorize arm or Hand
@@ -45,9 +59,9 @@ or unexposed buttons instead of silently accepting them.
 
 ## ROS button representation
 
-On ROS topics, `QuestControllerState` contains a bounded (maximum four)
-`QuestButtonState[] buttons` list. Updated APK packets produce `thumbstick`,
-`a`, `b` for the right controller and `thumbstick`, `x`, `y`, `menu` for the left.
+On ROS topics, the live `QuestControllerState` button list has `a` and `b`
+on the right and `x`, `y`, and `menu` on the left. The ROS array bound remains
+four entries for compatibility with existing recordings.
 Each entry preserves `pressed` and `active`
 independently. `active=true` means the OpenXR action is available, including
 when the button is released; it does not mean the button is pressed.
@@ -58,9 +72,6 @@ Example while holding the right A button:
 ```yaml
 controller_id: right
 buttons:
-- name: thumbstick
-  pressed: false
-  active: true
 - name: a
   pressed: true
   active: true
@@ -69,18 +80,20 @@ buttons:
   active: true
 ```
 
-Joystick axes are separate ROS fields: `thumbstick_x`, `thumbstick_y` and
-`thumbstick_active`. Updated APK packets carry the pair `thumbstick_xy: [x,y]`
-and `thumbstick_active`; both axes must be finite and inside `[-1,1]`.
+OpenXR reads each joystick as a two-axis action. The APK sends
+`thumbstick_xy: [x,y]` and `thumbstick_active`. The bridge publishes these as
+`thumbstick_x`, `thumbstick_y`, and `thumbstick_active` in
+`QuestControllerState` on the aggregate and per-hand topics. Both axes must
+be finite and inside `[-1,1]`. The Hand worker uses the horizontal axis and
+the availability flag.
 Availability is preserved independently of a centered value. A missing pair
 from an older APK remains inactive, so it cannot authorize Hand motion or
 neutral recovery. Partial pairs and invalid axes are malformed and invalidate
-input. Side-grip values and click buttons remain available for recording;
-they no longer actuate the Hand.
+input. Side-grip values remain available for recording.
 
-This changes the ROS schema. Rebuild `quest_teleop_interfaces`, the bridge,
-Hand worker and all other active consumers, install the updated APK, and
-restart the pipeline. Older packets remain usable for arm control only.
+Version 1 packets from older APKs may include the two legacy thumbstick-click
+fields. The bridge validates the pair and discards it before publishing ROS
+state. Older APKs that provide joystick axes can still control the Hand.
 
 Request:
 
@@ -133,8 +146,6 @@ Controller input JSON schema (all arrays use metres, radians, m/s, rad/s; quater
     "trigger_active": true,
     "grip": 0.0,
     "grip_active": true,
-    "thumbstick_click": false,
-    "thumbstick_click_active": true,
     "thumbstick_xy": [-0.8, 0.0],
     "thumbstick_active": true,
     "button_a": false,
@@ -146,8 +157,7 @@ Controller input JSON schema (all arrays use metres, radians, m/s, rad/s; quater
 ```
 
 Inputs contain only controller-specific buttons: right packets carry A/B;
-left packets carry X/Y/menu. Both additionally carry the assigned joystick click
-as `thumbstick_click` and `thumbstick_click_active` (optional only for old APKs). The System/Meta button is not exposed. The
+left packets carry X/Y/Menu. The
 `*_active` flags preserve OpenXR availability separately from each value;
 an inactive action must not be interpreted as a released button.
 

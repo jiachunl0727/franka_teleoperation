@@ -34,6 +34,7 @@ bool grip_active
 float32 thumbstick_x
 float32 thumbstick_y
 bool thumbstick_active
-# Only this controller's physical buttons: right thumbstick/a/b; left thumbstick/x/y/menu.
+# Only this controller's physical buttons: right a/b; left x/y/menu.
 # Disconnect notifications carry an empty array with connection_valid=false.
+# Keep the original wire bound for recorded messages. Live samples have at most three entries.
 QuestButtonState[<=4] buttons

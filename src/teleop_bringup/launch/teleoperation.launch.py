@@ -11,48 +11,32 @@ from launch.actions import (
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from teleop_bringup.configuration import (
-    read_mapping,
+    full_topic,
     load_arms,
     select_arms,
-    launch_bool,
 )
 from teleop_bringup.runtime_configuration import (
-    PIPELINE_DEFAULTS,
     unified_settings,
     load_runtime,
+    load_runtime_document,
 )
-
-REMOVED = set(PIPELINE_DEFAULTS) | {
-    "listen_port",
-    "recording_mode",
-    "recording_topics",
-    "recording_output_root",
-    "left_controller_state_topic",
-    "recording_namespace",
-    "controller_config",
-    "gripper_config",
-    "safety_config",
-    "arms_config",
-    "recording_config",
-}
-
 
 def setup(context):
     value = lambda key: LaunchConfiguration(key).perform(context)
-    if REMOVED & set(context.launch_configurations):
+    if set(context.launch_configurations) - {"runtime_config"}:
         raise ValueError(
-            "overall bringup accepts only runtime_config and operator_confirm; set all pipeline options in YAML"
+            "overall bringup accepts only runtime_config; set all pipeline options in YAML"
         )
     path = value("runtime_config")
-    pipeline, bridge, recording = unified_settings(read_mapping(path))
+    pipeline, bridge, recording = unified_settings(load_runtime_document(path))
     if pipeline["backend"] not in ("mock", "hardware"):
         raise ValueError("backend must be mock/hardware")
-    confirmed = launch_bool(value("operator_confirm"))
-    if pipeline["backend"] == "hardware" and not confirmed:
-        raise ValueError("hardware requires explicit operator_confirm:=true")
     configured = load_arms(path)
     active = select_arms(configured, pipeline["mode"], pipeline["single_controller"])
     settings = load_runtime(path, configured)
+    from teleop_bringup.cbf_configuration import prepare_cbf
+
+    prepare_cbf(settings, active, pipeline["backend"])
     # Validate hardware ownership before starting any child (including Hand).
     if pipeline["backend"] == "hardware" and (
         pipeline["start_controller"] or pipeline["start_hand"]
@@ -95,16 +79,18 @@ def setup(context):
                 start_bridge=pipeline["start_bridge"],
                 start_mapper=pipeline["start_mapper"],
                 mock_measured_pose=pipeline["mock_measured_pose"],
+                recording_status_topic=full_topic(
+                    "recording_status", recording["namespace"]
+                ),
             ),
         )
     if pipeline["start_controller"]:
         include(
             "teleop_bringup",
-            "cartesian_impedance_controller.launch.py",
+            "cartesian_pd_controller.launch.py",
             dict(
                 common,
                 backend=pipeline["backend"],
-                operator_confirm=confirmed,
                 runtime_config=path,
                 homing_enabled=pipeline["homing_enabled"],
             ),
@@ -116,7 +102,6 @@ def setup(context):
             dict(
                 common,
                 backend=pipeline["backend"],
-                operator_confirm=confirmed,
                 runtime_config=path,
             ),
         )
@@ -144,12 +129,7 @@ def generate_launch_description():
         [
             DeclareLaunchArgument(
                 "runtime_config",
-                description="Required path to the complete single/dual Panda runtime YAML",
-            ),
-            DeclareLaunchArgument(
-                "operator_confirm",
-                default_value="false",
-                description="Explicit hardware authorization; not required for mock",
+                description="Required path to the single- or dual-Panda runtime YAML",
             ),
             OpaqueFunction(function=setup),
         ]

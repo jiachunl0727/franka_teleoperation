@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/test_hand_core.dir/test/test_hand_core.cpp.o -o test_hand_core  gtest/libgtest_main.a gtest/libgtest.a libhand_core.a -pthread 

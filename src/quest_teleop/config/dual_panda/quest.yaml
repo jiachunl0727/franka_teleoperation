@@ -1,0 +1,30 @@
+# Quest transport and mapping tuning. Arm calibration and motion scales live in bringup.
+bridge:
+  bind_address: 127.0.0.1
+  command_timeout_ms: 100
+  max_clock_uncertainty_ms: 10
+  max_clock_sync_age_ms: 3000
+  max_source_future_ms: 10
+  client_receive_timeout_ms: 500
+mapper:
+  feedforward_scale: 0.5
+  pose_filter: none  # Choices: none, low_pass, four_pole.
+  velocity_filter: low_pass  # Choices: none, low_pass, four_pole.
+  pose_interpolation: none  # Choices: none, ptp_polynomial, spline.
+  velocity_interpolation: none  # Choices: none, ptp_polynomial, spline.
+  pose_interpolation_duration_ms: 40.0
+  velocity_interpolation_duration_ms: 40.0
+  command_timeout_ms: 100
+  max_clock_uncertainty_ms: 10.0
+  max_source_future_ms: 10.0
+  min_derivative_dt_ms: 1.0
+  max_derivative_dt_ms: 100.0
+  trigger_engage: 0.75
+  trigger_release: 0.25
+mapper_by_controller:
+  left:
+    pose_filter_cutoff_hz: 5.0
+    velocity_filter_cutoff_hz: 5.0
+  right:
+    pose_filter_cutoff_hz: 5.0
+    velocity_filter_cutoff_hz: 5.0

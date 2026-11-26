@@ -11,7 +11,7 @@ inline RobotModelState panda_model_fixture(const Vector7d& q) {
   s.q = q;
   const std::array<Eigen::Vector3d, 7> translation = {
       Eigen::Vector3d{0, 0, .333}, {0, 0, 0}, {0, -.316, 0}, {.0825, 0, 0},
-      {-.0825, 0, .384},           {0, 0, 0}, {.088, 0, 0}};
+      {-.0825, .384, 0},           {0, 0, 0}, {.088, 0, 0}};
   const std::array<double, 7> roll = {0,         -M_PI / 2, M_PI / 2, M_PI / 2,
                                       -M_PI / 2, M_PI / 2,  M_PI / 2};
   std::array<Eigen::Vector3d, 7> origins, axes;

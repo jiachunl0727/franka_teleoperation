@@ -1,0 +1,32 @@
+-- run_test.py: invoking following command in '/ws/build-startup-observer/teleop_controllers':
+ - /ws/build-startup-observer/teleop_controllers/test_hardware_startup --gtest_output=xml:/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_hardware_startup.gtest.xml
+
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 6 tests from 2 test suites.
+[----------] Global test environment set-up.
+[----------] 5 tests from HardwareStartup
+[ RUN      ] HardwareStartup.IdleWithoutErrorsCanRequestControl
+[       OK ] HardwareStartup.IdleWithoutErrorsCanRequestControl (0 ms)
+[ RUN      ] HardwareStartup.ActiveAndFaultedModesNeverRequestCompetingControl
+[       OK ] HardwareStartup.ActiveAndFaultedModesNeverRequestCompetingControl (0 ms)
+[ RUN      ] HardwareStartup.HistoricalErrorsDoNotBlockHealthyIdleStartup
+[       OK ] HardwareStartup.HistoricalErrorsDoNotBlockHealthyIdleStartup (0 ms)
+[ RUN      ] HardwareStartup.ObservedTransitionAllowsIdleAndMoveOnly
+[       OK ] HardwareStartup.ObservedTransitionAllowsIdleAndMoveOnly (0 ms)
+[ RUN      ] HardwareStartup.ObservedTransitionRejectsCurrentErrorsInEitherMode
+[       OK ] HardwareStartup.ObservedTransitionRejectsCurrentErrorsInEitherMode (0 ms)
+[----------] 5 tests from HardwareStartup (0 ms total)
+
+[----------] 1 test from ModelFeedback
+[ RUN      ] ModelFeedback.UsesUrdfDynamicsAndSharesOneCoherentModelWithoutRobotAccess
+[       OK ] ModelFeedback.UsesUrdfDynamicsAndSharesOneCoherentModelWithoutRobotAccess (0 ms)
+[----------] 1 test from ModelFeedback (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 6 tests from 2 test suites ran. (0 ms total)
+[  PASSED  ] 6 tests.
+
+
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_hardware_startup.gtest.xml'
+-- run_test.py: verify result file '/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_hardware_startup.gtest.xml'

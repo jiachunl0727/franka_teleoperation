@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc CMakeFiles/test_local_utilities.dir/test/test_local_utilities.cpp.o -o test_local_utilities  gtest/libgtest_main.a gtest/libgtest.a libcontroller_manager.a -pthread /usr/lib/x86_64-linux-gnu/libtinyxml2.so 

@@ -125,8 +125,10 @@ class MenuRecorder(Node):
         )
         self.declare_parameter("inactive_namespaces_json", "[]")
         self.declare_parameter("output_root", "/ws/log/quest_bags")
+        self.declare_parameter("output_directory", "")
         self.declare_parameter("storage_id", "sqlite3")
         self.declare_parameter("menu_debounce_seconds", 0.35)
+        self.declare_parameter("recording_mode", "menu")
         self.topics = json.loads(self.get_parameter("topics_json").value)
         self.inactive = json.loads(self.get_parameter("inactive_namespaces_json").value)
         if not isinstance(self.topics, list) or not self.topics:
@@ -136,10 +138,16 @@ class MenuRecorder(Node):
             raise ValueError("inactive_namespaces_json needs a list")
         self.inactive = [full_topic(ns) for ns in self.inactive]
         self.root = Path(self.get_parameter("output_root").value).expanduser()
+        self.output_directory = self.get_parameter("output_directory").value
+        self.mode = self.get_parameter("recording_mode").value
+        if self.mode not in ("menu", "continuous"):
+            raise ValueError("recording_mode must be menu/continuous")
         if not self.root.is_absolute():
             raise ValueError("output_root must be absolute")
         self.storage = self.get_parameter("storage_id").value
-        if self.storage != "sqlite3":
+        if not isinstance(self.storage, str) or not self.storage:
+            raise ValueError("storage_id must be a nonempty string")
+        if self.mode == "menu" and self.storage != "sqlite3":
             raise ValueError("this Humble environment provides sqlite3 recording")
         debounce = self.get_parameter("menu_debounce_seconds").value
         if not math.isfinite(debounce) or debounce < 0:
@@ -160,20 +168,26 @@ class MenuRecorder(Node):
             "recording_status",
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL),
         )
-        self.create_subscription(
-            QuestControllerState,
-            self.get_parameter("controller_state_topic").value,
-            self.on_input,
-            20,
-        )
+        if self.mode == "menu":
+            self.create_subscription(
+                QuestControllerState,
+                self.get_parameter("controller_state_topic").value,
+                self.on_input,
+                20,
+            )
         self.create_timer(0.05, self.tick)
-        self.get_logger().info(
-            "Recording controlled by fresh LEFT Menu presses on "
-            + self.get_parameter("controller_state_topic").value
-            + "; homing does not disable recording. Output root: "
-            + str(self.root)
-        )
+        if self.mode == "menu":
+            self.get_logger().info(
+                "Recording controlled by fresh LEFT Menu presses on "
+                + self.get_parameter("controller_state_topic").value
+                + "; homing does not disable recording. Output root: "
+                + str(self.root)
+            )
+        else:
+            self.get_logger().info("Continuous recording output root: " + str(self.root))
         self.publish()
+        if self.mode == "continuous":
+            self.start()
 
     def publish(self):
         if not self.context.ok():
@@ -225,19 +239,29 @@ class MenuRecorder(Node):
                 )
 
     def start(self):
-        self.selected = [
-            t
-            for t in self.topics
-            if not any(t == ns or t.startswith(ns + "/") for ns in self.inactive)
-            and self.get_publishers_info_by_topic(t)
-        ]
+        if self.mode == "continuous":
+            self.selected = [
+                t
+                for t in self.topics
+                if not any(t == ns or t.startswith(ns + "/") for ns in self.inactive)
+            ]
+        else:
+            self.selected = [
+                t
+                for t in self.topics
+                if not any(t == ns or t.startswith(ns + "/") for ns in self.inactive)
+                and self.get_publishers_info_by_topic(t)
+            ]
         if not self.selected:
             self.phase = "idle"
             self.message = "no selected topics currently have publishers"
             self.publish()
             return
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        self.output = str(self.root / f"quest_{stamp}_{uuid.uuid4().hex[:8]}")
+        if self.output_directory:
+            self.output = str(Path(self.output_directory).expanduser())
+        else:
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            self.output = str(self.root / f"quest_{stamp}_{uuid.uuid4().hex[:8]}")
         try:
             self.root.mkdir(parents=True, exist_ok=True)
             self.log = Path(self.output + ".recorder.log").open("w")
@@ -261,7 +285,9 @@ class MenuRecorder(Node):
                 start_new_session=True,
             )
             self.phase = "recording"
-            self.message = "started by left Menu"
+            self.message = (
+                "started on launch" if self.mode == "continuous" else "started by left Menu"
+            )
             self.stop_started_ns = self.stop_stage = 0
         except Exception as error:
             if self.log:

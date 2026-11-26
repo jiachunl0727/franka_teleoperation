@@ -9,6 +9,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGES = (
+    "cbf_safety_filter",
     "quest_teleop",
     "quest_teleop_interfaces",
     "recording",

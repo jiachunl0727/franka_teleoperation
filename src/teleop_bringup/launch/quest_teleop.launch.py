@@ -29,6 +29,7 @@ def setup(context):
             for k, v in BRIDGE_DEFAULTS.items()
             if k != "namespace"
         }
+        params["recording_status_topic"] = value("recording_status_topic")
         actions.append(
             Node(
                 package="quest_teleop",
@@ -72,13 +73,14 @@ def setup(context):
 def generate_launch_description():
     defaults = dict(
         arms_config=str(
-            Path(get_package_share_directory("teleop_bringup")) / "config/arms.yaml"
+            Path(get_package_share_directory("teleop_bringup")) / "config/single_panda/arms.yaml"
         ),
         mode="single",
         single_controller="right",
         start_bridge="true",
         start_mapper="true",
         mock_measured_pose="false",
+        recording_status_topic="/quest/recording_status",
         **{k: str(v) for k, v in BRIDGE_DEFAULTS.items()},
     )
     return LaunchDescription(

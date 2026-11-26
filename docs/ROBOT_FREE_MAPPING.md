@@ -7,7 +7,7 @@ recorder. It does not start an arm controller or gripper worker.
 
 ## Configuration
 
-This mapper-only launch reads `src/quest_teleop/config/arms.yaml`, with one Panda
+This mapper-only launch reads `src/teleop_bringup/config/single_panda/arms.yaml`, with one Panda
 assigned to the right Quest controller. It does not read the combined runtime
 YAML. The mapper defaults remain trigger engage/release
 0.75/0.25, 100 ms command timeout, 10 ms clock uncertainty, 10 Hz twist filter,
@@ -93,7 +93,7 @@ recovery requires release/re-engagement. These commands have no FCI consumer.
 For the two-arm mock configuration, add this launch argument in terminal 1:
 
 ```text
-arms_config:=/ws/src/quest_teleop/config/arms_two_mock.yaml
+arms_config:=/ws/src/teleop_bringup/config/dual_panda/arms_two_mock.yaml
 ```
 
 Commands then appear on `/panda_left/cartesian_teleop_command` and
@@ -103,7 +103,7 @@ Commands then appear on `/panda_left/cartesian_teleop_command` and
 
 Recording is off by default. Add `recording_enabled:=true` to the same launch
 command to enable recording with the profile in
-`src/recording/config/recording.yaml`. Defaults select each arm's raw input,
+`src/recording/config/standalone.yaml`. Defaults select each arm's raw input,
 commands, monitor/measured poses, state/status and tracking topics. This
 mapper-only launch publishes no controller, Hand or tracking measurements;
 only selected topics with publishers are recorded. For trajectory reports,

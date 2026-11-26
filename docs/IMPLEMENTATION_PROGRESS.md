@@ -1,5 +1,190 @@
 # Implementation record
 
+## Actuation-model discrepancy audit — 2026-11-05
+
+The operator confirms no contact or noticeable cable pull in the forensic run.
+Reproduced prediction mismatch directly from original runtime velocity rows;
+independent forward dynamics agree to <1e-9 while physical agreement remains red.
+Position-based acceleration also remains small. Substituting measured torque or
+testing simple 1–50 ms command delays does not account for the full discrepancy.
+
+Investigated apparent motor inertia/inner torque-loop dynamics using primary
+research. An OFFLINE literature-parameter sensitivity changes example joint-7
+prediction from 455.879 to 9.567 rad/s², and feasibility from six to all 32 failed
+snapshots, with 31 feasible bounded nominals. The actual C++ builder/qpOASES
+confirms all augmented candidates, with coefficients matching reconstruction
+to <1e-9. Physical prediction still disagrees with measured 0.407 rad/s².
+This is a leading hypothesis, not calibrated actuator parameters or a fixed
+hardware safety filter. No production dynamics, constraints, limits or execution
+selection were changed. Motor states, actual load metadata and inner-loop
+parameters are missing evidence for validation. See
+[actuation audit](cbf/ACTUATION_MODEL_AUDIT.md).
+
+## Synchronous mode selection and model interpretation — 2026-11-05
+
+At the operator's request, selected synchronous CBF solving and allowed either
+validated execution mode for explicitly confirmed single-arm commissioning.
+Retained default-disabled activation, all constraints/gains/penalties, actuator
+limits, diagnostics, 600 us filter / 800 us callback limits and dual hardware
+block. Async remains available. Fixed the reproduced execution-mode diagnostic
+mislabel on async preparation failures; both modes' shadow paths preserve nominal
+torque and capture behavior in integration tests.
+
+All 222 affected cases pass. 640 synchronous recorded-model solves have max
+366.075 us, verifying all six feasible cases in every round and rejecting the
+26 infeasible cases. Four full 52-row mock owner profiles total 13,408 callbacks,
+max 269.902 us, zero deadline violations/drops/faults. These are offline/mock
+observations, not hardware qualification. Preserved old forensic configs; a
+separate synchronous shadow copy is prepared and has not been physically run.
+
+Traced the extreme acceleration to inverse-mass sensitivity and coupled torques:
+at cycle 22,810 the joint-7 inverse diagonal is 513.005, with its own torque
+contributing 329.60 rad/s² of the 455.37 prediction. This explains the arithmetic,
+not the unresolved physical discrepancy. Replacing candidate-dependent dynamics
+with a fixed past velocity slope would remove torque authority from the CBF rows.
+See [synchronous execution/model report](cbf/SYNCHRONOUS_EXECUTION.md); evidence:
+`log/commissioning/2026-11-05-synchronous/`.
+
+## Free-space hardware forensic evaluation — 2026-11-05
+
+Analyzed the completed 16:00 Berlin shadow trial: 46,415 CBF samples, 30,445
+active cycles, **3.2748%** active acceptance, no internal recording gaps/drops,
+zero shadow clipping discrepancy and 150.506 us max callback. Clean operator
+shutdown; the startup last-motion reflex belongs to the previous trial.
+
+Replayed 32 failed current-owner snapshots into 2,304 configured/extended native
+results. Independent HiGHS feasibility agrees with qpOASES: 26 complete problems
+are infeasible, six feasible; all 32 table-only problems are feasible. Joint
+barriers conflict with the narrow current slew interval; 15,675 active cycles
+have an individually impossible row. The recorded desired-torque rigid-model
+prediction also strongly disagrees with observed short-window velocity change
+(example joint 7: 455.88 vs 0.4065 rad/s² over the same 20 ms). Physical origin
+is not identified; do not infer validated acceleration dynamics from this model.
+Five feasible captures have fresh same-epoch candidates that fail current rows;
+the sixth has a stale, wrong-epoch candidate. Longer native budgets do not repair
+the mathematical infeasibility. Offline gain/slew sensitivity and a minimized
+native red reproduction are retained; no physical settings or constraints changed.
+
+Inspected and preserved the supplied 1,906-triangle UMI finger STL and a verified
+conservative local capsule. Operator confirms retained metal fingers, parallel
+tips pointing away from Hand, and ~72 mm screw-to-tip. Robot-frame mounting and
+opening-sweep placement remain uncalibrated. Complete evidence and correction
+order: `log/commissioning/2026-11-05-cbf-forensics/review/hardware-review.md`.
+
+## Replayable hardware-acceptance diagnosis — 2026-11-05
+
+The remaining hardware acceptance rate is unresolved. Added bounded, optional
+single-arm shadow capture of exact current-owner QP rows/bounds/objective input,
+model state and candidate torque/age/epoch/worker identifiers. Fixed-size copies
+use the existing bounded queue; formatting/file I/O remains outside the callback.
+An offline replay command separates actuator, position, velocity, table and
+combined rows across three native backends and hard/elastic formulations, with
+original verification policy and an optional larger offline iteration budget.
+It reports impossible-row witnesses and reconstructed candidate rejection checks;
+it does not claim to replay older worker requests or scheduling.
+
+All 214 affected case-level regressions pass. Three final mock captures produce
+108 replay results, all with candidate metadata. Capture-enabled mock profiling
+observed 3,152 callbacks, max 236.348 us, zero >800 us or diagnostic drops. This
+establishes the diagnostic route, not hardware timing or repaired acceptance.
+Prepared a separate operator-run free-space shadow capture, with Hand/homing
+disabled in that copy and all current constraints/limits retained. No physical
+operation or filtered-mode selection was performed. Finger CAD is not required
+for this diagnosis. Historical guide: [failure capture](cbf/FAILURE_CAPTURE.md); evidence:
+`log/commissioning/2026-11-05-cbf-forensics/`.
+
+## Corrected shadow contact-trial evaluation — 2026-11-05
+
+The operator reported intentional fingertip/table contact. The log confirms
+`cartesian_reflex`, controller exit and clean bag closure. Recorded callback
+maximum was 229.434 us, zero >800 us, zero internal cycle gaps/diagnostic drops;
+entry intervals still reached 6.181 ms. Active proposal acceptance was 4.93%.
+Modeled table margin stayed +49.701 mm at the final recorded state despite
+reported physical contact; actual finger geometry/transforms remain unverified.
+
+Review found a stale controller caller after the diagnostic return struct grew
+in the prior incremental build. Family IDs are corrupted and current-box fields
+absent in this bag. Preserved the trial binaries, reproduced the mismatch with
+a mock no-violation diagnostic check, and repaired it through a clean frozen-source
+filter/controller rebuild. Strengthened assertions and all 212 affected cases
+pass. Selected qpOASES hard/elastic single/dual filtered and single shadow mock
+timing pass (max 421.399 / 195.190 us). A moving-box test fixture was minimized
+to remove unrelated high-penalty OSQP convergence timing; production numerical
+settings were unchanged. No physical operation, recovery or filtered selection.
+Full evidence: `log/commissioning/2026-11-05-shadow-corrected/review/`.
+
+## Hardware-shadow acceptance corrections — 2026-11-05
+
+The operator clarified that the physical table height is 0.127 m; the recorded
+0.190 m plane duplicated a 0.063 m finger allowance already represented by the
+Hand/finger geometry. Corrected-plane replay removes all 5,836 table-domain
+failures, with minimum modeled clearance margins 51.528 / 141.000 mm.
+
+Two reproduced numerical-route failures are fixed: immediately accept the
+actuator-box projection of nominal when every current original row is feasible;
+project fresh same-epoch worker proposals into the current actuator interval
+before independently verifying every current row. Retain strict age/domain/
+epoch/deadline checks and the unchanged nominal shadow torque path. Added
+independent nominal-feasibility and current-box infeasibility diagnostics, and
+matched shadow/filtered epoch transitions. Both new acceptance tests fail against
+the saved original library and pass with the fix.
+
+Release builds and all 212 affected cases pass. Updated async mock timing passes
+12 filtered and six shadow combinations, zero >800 us callbacks, process faults
+or diagnostic drops; observed maxima 299.318 us single / 523.841 us dual filtered,
+390.189 us single shadow. Original physical timing gaps remain unresolved and
+the bags lack the full dynamics/row data needed to predict corrected hardware
+acceptance rates. A separate corrected shadow trial is prepared; no physical
+operation or filtered selection was performed. See
+[diagnosis](cbf/SHADOW_FAILURE_DIAGNOSIS.md).
+
+## Single-arm commissioning preparation — 2026-11-05
+
+Added explicit shadow/filtered commissioning selection with separate confirmation
+and default-blocked activation. Shadow retains the nominal actuator-bounded torque
+and disables CBF reference projection/holding. Direct owner and bringup enforce
+single-arm hardware scope; hardware requires async execution, diagnostics and
+<=800 us callback budget. Hardware timing includes model acquisition, thread CPU
+time and measured callback intervals; wake-up lateness is explicitly unavailable.
+All 207 regression cases passed; updated mock timing passed all 12 filtered
+configurations (56,021 observed callbacks, zero >800 us; max 331 us single,
+568 us dual). See [verification](cbf/COMMISSIONING_SOFTWARE_VERIFICATION.md) and
+[procedure](cbf/HARDWARE_COMMISSIONING.md). No physical operation performed.
+
+## Callback budget and asynchronous proposals — 2026-11-01
+
+Synchronous optimization still exceeded the requested 800 µs callback budget,
+so native QP solving now has an asynchronous mode. Each independent arm owner
+verifies proposals against fresh rows and actuator bounds or verifies freshly
+computed holding torque. No callback waits for a worker. Diagnostics distinguish
+CPU time, wall time and scheduling lateness; mock FIFO timing and active-only
+profiling are explicit. All 12 backend/formulation/arm configurations passed
+with zero >800 µs callbacks in 128,385 observed callbacks (90,000 retained active
+samples); observed maxima were 523 µs single and 694 µs dual. All 193 regression
+cases passed. Current evidence and limitations are in the
+[callback budget report](cbf/CALLBACK_BUDGET_REPORT.md). Hardware activation remains
+blocked, and bringup CBF remains disabled by default.
+
+## Collision/singularity extension — 2026-11-01
+
+Default-disabled hard self/inter-arm sphere-cover and full-task singularity constraints now run in the linked numerical layer. Independent owners exchange bounded fresh peer geometry; the optional nominal reference governor preserves feasible sliding/retreat. Franka-derived geometry includes base and full Hand/finger sweep. Mock profiling exposed and fixed peer-clock ordering and asymmetric-owner setup/shutdown races. The original synchronous timing gate failed; the follow-up above supersedes its mock timing results. Hardware activation remains blocked. Current evidence: [verification](cbf/AVOIDANCE_VERIFICATION.md), [design](cbf/COLLISION_AND_SINGULARITY.md), [short hardware procedure](cbf/HARDWARE_COMMISSIONING.md).
+
+## Linked CBF software layer (2026-11-01)
+
+A new default-disabled `cbf_safety_filter` numerical library is linked into the
+existing owner, following the supplied roadmap. OSQP, qpOASES and PIQP support
+hard/elastic formulations; joint/table/static-sphere rows, strict per-arm startup
+configuration, original/augmented verification and off-thread diagnostics are
+implemented. The existing nominal law, optional controller switches and Hand
+logic remain. Builds and 170 robot-free cases pass.
+
+The large-problem synchronous timing gate does **not** pass; qpOASES allocates
+in hot starts, OSQP rejects some stress cases, and physical full-callback/model
+validation is unperformed. All hardware CBF activation remains blocked. See
+[verification and release status](cbf/VERIFICATION.md), including raw benchmark
+CSV artifacts and the still-unresolved wrist/model discrepancy.
+
+
 ## Optional controller limits (2026-10-29)
 
 Reference shaping, tracking-error protection and Cartesian wrench caps now have

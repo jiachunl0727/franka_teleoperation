@@ -10,6 +10,8 @@ const char* reason_name(Reason reason) noexcept {
       return "protective_tracking_limit";
     case Reason::input_velocity_limit:
       return "protective_input_velocity_limit";
+    case Reason::cbf_failure:
+      return "protective_cbf_failure";
     case Reason::startup:
       return "startup";
     case Reason::released:
@@ -26,8 +28,6 @@ const char* reason_name(Reason reason) noexcept {
       return "duplicate_or_out_of_order";
     case Reason::session_change:
       return "session_or_reference_change";
-    case Reason::envelope:
-      return "outer_envelope";
     case Reason::queue_overflow:
       return "command_queue_overflow";
     case Reason::invalid_state:
@@ -58,13 +58,14 @@ const char* state_fault_name(StateFault fault) noexcept {
       return "empty_actuator_interval";
     case StateFault::invalid_reference:
       return "invalid_controller_reference";
+    case StateFault::singular_task:
+      return "singular_task_inertia";
   }
   return "unknown";
 }
 
 bool ManagerParameters::valid() const noexcept {
-  const double numbers[] = {chain_radius,
-                            torque_rate,
+  const double numbers[] = {torque_rate,
                             reference_linear_speed,
                             reference_angular_speed,
                             reference_linear_acceleration,
@@ -74,9 +75,7 @@ bool ManagerParameters::valid() const noexcept {
   for (double value : numbers)
     if (!std::isfinite(value) || value <= 0)
       return false;
-  if (!envelope_center.allFinite() || !std::isfinite(tool_offset) || tool_offset < 0 ||
-      !std::isfinite(envelope_margin) || envelope_margin < 0 || torque_rate > 1000 ||
-      timeout_ns == 0 || uncertainty_ns == 0)
+  if (torque_rate > 1000 || timeout_ns == 0 || uncertainty_ns == 0)
     return false;
   const Vector7 ceilings = (Vector7() << 87, 87, 87, 87, 12, 12, 12).finished();
   return torque_limits.allFinite() && (torque_limits.array() > 0).all() &&
@@ -177,11 +176,6 @@ void ControllerManager::accept(const Command& c, uint64_t now) noexcept {
     protect(Reason::input_velocity_limit);
     return;
   }
-  if ((c.position - p_.envelope_center).norm() >
-      p_.chain_radius + p_.tool_offset + p_.envelope_margin) {
-    fault(Reason::envelope);
-    return;
-  }
   if (!release_seen_) {
     enabled_ = false;
     return;
@@ -213,6 +207,20 @@ Eigen::Vector3d rotation_vector(Eigen::Quaterniond q) noexcept {
   const Eigen::AngleAxisd a(q);
   return a.axis() * a.angle();
 }
+Vector6 reference_step(const CartesianReference& goal, const CartesianReference& anchor) noexcept {
+  Vector6 step;
+  step.head<3>() = goal.position - anchor.position;
+  step.tail<3>() = rotation_vector(goal.orientation * anchor.orientation.conjugate());
+  return step;
+}
+void advance_reference(CartesianReference& reference, const Vector6& step) noexcept {
+  reference.position += step.head<3>();
+  const double angle = step.tail<3>().norm();
+  if (angle > 1e-12)
+    reference.orientation = (Eigen::Quaterniond(Eigen::AngleAxisd(angle, step.tail<3>() / angle)) *
+                             reference.orientation)
+                                .normalized();
+}
 }  // namespace
 
 void ControllerManager::protect(Reason reason) noexcept {
@@ -241,19 +249,19 @@ Vector7 ControllerManager::protective_torque(const ArmState& s) noexcept {
   return s.coriolis + s.mass * a;
 }
 
-CartesianReference ControllerManager::govern(const ArmState& s, double dt, bool reset) noexcept {
+CartesianReference ControllerManager::govern(const ArmState& s, const CartesianReference& goal,
+                                             double dt, bool reset) noexcept {
   if (reset) {
     governed_ = CartesianReference{s.position, s.orientation, Vector6::Zero()};
     blocked_seconds_ = 0;
   }
-  const Eigen::Vector3d goal = last_.orientation_only ? orientation_hold_position_ : last_.position;
-  const Eigen::Vector3d displacement = goal - governed_.position;
+  const Eigen::Vector3d displacement = goal.position - governed_.position;
   const Eigen::Vector3d rotation =
-      rotation_vector(last_.orientation * governed_.orientation.conjugate());
+      rotation_vector(goal.orientation * governed_.orientation.conjugate());
   // Native/pose-derived feedforward biases the trajectory velocity, but both
-  // pose and velocity sent to impedance come from this single bounded trajectory.
-  Eigen::Vector3d v = last_.twist.head<3>() + 4.0 * displacement;
-  Eigen::Vector3d w = last_.twist.tail<3>() + 4.0 * rotation;
+  // pose and velocity sent to pd come from this single bounded trajectory.
+  Eigen::Vector3d v = goal.twist.head<3>() + 4.0 * displacement;
+  Eigen::Vector3d w = goal.twist.tail<3>() + 4.0 * rotation;
   v = bounded(v, std::min(p_.reference_linear_speed,
                           std::sqrt(2 * p_.reference_linear_acceleration * displacement.norm())));
   w = bounded(w, std::min(p_.reference_angular_speed,
@@ -273,7 +281,8 @@ CartesianReference ControllerManager::govern(const ArmState& s, double dt, bool 
   return governed_;
 }
 
-ManagerOutput ControllerManager::update(const ArmState& s, uint64_t now, double dt) noexcept {
+ManagerOutput ControllerManager::update(const ArmState& s, uint64_t now, double dt,
+                                        BeforeReference prepare, void* context) noexcept {
   ManagerOutput result;
   auto& out = result.control;
   if (identity_ && !fresh(last_, now))
@@ -317,6 +326,8 @@ ManagerOutput ControllerManager::update(const ArmState& s, uint64_t now, double 
     protect(Reason::tracking_limit);
 
   if (protective_stop_) {
+    if (prepare)
+      prepare(context, false);
     out.reason = protective_reason_;
     out.protective_stop = true;
     out.target_position = s.position;
@@ -346,6 +357,8 @@ ManagerOutput ControllerManager::update(const ArmState& s, uint64_t now, double 
 
   if (result.homing.stop_failed)
     return result;  // Fatal controlled-stop failure.
+  if (prepare)
+    prepare(context, enabled_ || result.homing.active);
   TorqueController* law =
       enabled_ ? (last_.orientation_only ? &orientation_only_ : &teleoperation_) : &damping_;
   if (enabled_ && last_.orientation_only) {
@@ -355,10 +368,56 @@ ManagerOutput ControllerManager::update(const ArmState& s, uint64_t now, double 
     out.desired_twist.head<3>().setZero();
   }
   if (enabled_) {
-    const auto trajectory =
-        p_.reference_shaping_enabled
-            ? govern(s, dt, reset_reference)
-            : CartesianReference{out.target_position, out.target_orientation, out.desired_twist};
+    CartesianReference goal{out.target_position, out.target_orientation, out.desired_twist};
+    if (reference_projection_) {
+      if (reset_reference) {
+        safety_reference_ = {s.position, s.orientation, Vector6::Zero()};
+        projection_input_ = projection_goal_ = safety_reference_;
+      }
+      if (discard_blocked_tracking_error_) {
+        // A binding constraint must discard already stored inward tracking
+        // error too, not only new input increments. No distance/speed setting
+        // enters this anti-windup operation; the owner supplies binding normals.
+        const CartesianReference measured{s.position, s.orientation, Vector6::Zero()};
+        const auto discard = [&](CartesianReference& reference) {
+          const auto lead =
+              reference_projection_(projection_context_, reference_step(reference, measured));
+          const auto twist = reference_projection_(projection_context_, reference.twist);
+          reference = measured;
+          advance_reference(reference, lead);
+          reference.twist = twist;
+        };
+        discard(safety_reference_);
+        discard(projection_goal_);
+        if (p_.reference_shaping_enabled)
+          discard(governed_);
+      }
+      // Consume raw input increments exactly once. Rejected motion never
+      // accumulates: a small reversal immediately retreats from the held pose.
+      const auto increment = reference_step(goal, projection_input_);
+      projection_input_ = goal;
+      advance_reference(projection_goal_, reference_projection_(projection_context_, increment));
+      // On activation, discard any pre-existing inward trajectory lead too.
+      const auto allowed = reference_projection_(
+          projection_context_, reference_step(projection_goal_, safety_reference_));
+      projection_goal_.position = safety_reference_.position;
+      projection_goal_.orientation = safety_reference_.orientation;
+      advance_reference(projection_goal_, allowed);
+      projection_goal_.twist = reference_projection_(projection_context_, goal.twist);
+      goal = projection_goal_;
+    }
+    auto trajectory = p_.reference_shaping_enabled ? govern(s, goal, dt, reset_reference) : goal;
+    if (reference_projection_) {
+      const auto step =
+          reference_projection_(projection_context_, reference_step(trajectory, safety_reference_));
+      const auto twist = reference_projection_(projection_context_, trajectory.twist);
+      trajectory = safety_reference_;
+      advance_reference(trajectory, step);
+      trajectory.twist = twist;
+      safety_reference_ = trajectory;
+      if (p_.reference_shaping_enabled)
+        governed_ = trajectory;
+    }
     out.target_position = trajectory.position;
     out.target_orientation = trajectory.orientation;
     out.desired_twist = trajectory.twist;

@@ -88,7 +88,7 @@ def test_slow_status_publication_cannot_starve_anchors_or_input():
                     "ros2",
                     "run",
                     "teleop_controllers",
-                    "cartesian_impedance_controller",
+                    "cartesian_pd_controller",
                     "--ros-args",
                     "-r",
                     "__ns:=" + prefix,

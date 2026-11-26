@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="4" failures="0" disabled="0" errors="0" time="0.053" timestamp="2026-11-12T15:58:33" name="AllTests">
+  <testsuite name="InterArmStartupTransport" tests="4" failures="0" disabled="0" errors="0" time="0.053" timestamp="2026-11-12T15:58:33">
+    <testcase name="PublishesNewStatesDuringDelayedMoveAcknowledgement" status="run" result="completed" time="0.009" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.InterArmStartupTransport" />
+    <testcase name="PublicObserverKeepsExclusiveOwnerAndFinishesNormally" status="run" result="completed" time="0.003" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.InterArmStartupTransport" />
+    <testcase name="ObserverFailureCancelsBeforeAnyTorqueAndUnlocksRead" status="run" result="completed" time="0.041" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.InterArmStartupTransport" />
+    <testcase name="RejectedMoveAcknowledgementNeverStartsTorqueLoop" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.InterArmStartupTransport" />
+  </testsuite>
+</testsuites>

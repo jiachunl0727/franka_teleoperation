@@ -18,7 +18,7 @@ def generate_launch_description():
         "translation_scale": "1.0",
         "rotation_scale": "1.0",
         "feedforward_scale": "1.0",
-        "twist_filter_cutoff_hz": "10.0",
+        "velocity_filter_cutoff_hz": "10.0",
         "command_timeout_ms": "100",
         "max_clock_uncertainty_ms": "10.0",
         "max_source_future_ms": "10.0",

@@ -4,7 +4,7 @@
 #include <limits>
 #include <quest_teleop_interfaces/msg/tracking_sample.hpp>
 
-#include "teleop_controllers/cartesian_impedance_controller.hpp"
+#include "teleop_controllers/cartesian_pd_controller.hpp"
 #include "teleop_controllers/tracking.hpp"
 
 namespace teleop_controllers {
@@ -12,7 +12,7 @@ namespace teleop_controllers {
 inline quest_teleop_interfaces::msg::TrackingSample tracking_message(
     const TrackingSnapshot& s, const std::string& frame, const builtin_interfaces::msg::Time& stamp,
     const Vector7& limits, double maximum_rate, uint64_t drops,
-    const CartesianImpedanceParameters& impedance) {
+    const CartesianPdParameters& pd) {
   quest_teleop_interfaces::msg::TrackingSample msg;
   msg.header.stamp = stamp;
   msg.header.frame_id = frame;
@@ -34,10 +34,10 @@ inline quest_teleop_interfaces::msg::TrackingSample tracking_message(
   msg.cartesian_reference_valid = s.control.motion_enabled && !s.homing.active;
   msg.homing_active = s.homing.active;
   msg.period_seconds = s.period;
-  msg.lambda_translation = impedance.lambda_translation;
-  msg.lambda_rotation = impedance.lambda_rotation;
-  msg.gain_translation = impedance.gain_translation;
-  msg.gain_rotation = impedance.gain_rotation;
+  msg.lambda_translation = pd.lambda_translation;
+  msg.lambda_rotation = pd.lambda_rotation;
+  msg.gain_translation = pd.gain_translation;
+  msg.gain_rotation = pd.gain_rotation;
   msg.command_age_ms =
       s.requested.source_ns
           ? (static_cast<double>(s.control_ns) - static_cast<double>(s.requested.source_ns)) / 1e6

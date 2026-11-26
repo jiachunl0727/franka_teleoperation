@@ -6,11 +6,6 @@
 namespace teleop_controllers {
 struct ManagerParameters {
   uint64_t timeout_ns{100000000}, uncertainty_ns{10000000}, future_ns{10000000};
-  // Pinned Panda URDF joint-origin chain, including flange. Center at joint1.
-  // This is an outer bound only; it is not an IK or collision check.
-  Eigen::Vector3d envelope_center{0, 0, 0.333};
-  double chain_radius{0.316 + 0.0825 + std::hypot(0.0825, 0.384) + 0.088 + 0.107};
-  double tool_offset{0.1034}, envelope_margin{0.001};
   double torque_rate{teleop_controllers::panda_torque_rate_limit()};
   Vector7 torque_limits{teleop_controllers::panda_torque_limits()};
   // Controller reference and tracking-response settings.
@@ -46,6 +41,14 @@ class ControllerManager {
       : ControllerManager(parameters, homing_parameters, teleoperation, teleoperation,
                           position_hold, damping) {}
   void accept(const Command& command, uint64_t now_ns) noexcept;
+  // Optional owner-supplied reference governor. No numerical safety dependency.
+  using ReferenceProjection = Vector6 (*)(const void*, const Vector6&) noexcept;
+  void reference_projection(ReferenceProjection function, const void* context,
+                            bool discard_blocked_tracking_error = false) noexcept {
+    reference_projection_ = function;
+    projection_context_ = context;
+    discard_blocked_tracking_error_ = discard_blocked_tracking_error;
+  }
   const Command& requested_command() const noexcept { return last_; }
   uint64_t release_source_ns() const noexcept { return last_release_source_ns_; }
   void homing_input(const HomingInput& input, uint64_t now_ns) noexcept {
@@ -54,14 +57,25 @@ class ControllerManager {
   }
   void cancel_homing(const char* reason) noexcept { homing_.cancel(reason); }
   void fault(Reason reason) noexcept;
+  void request_protective_stop(Reason reason) noexcept { protect(reason); }
   void shutdown() noexcept;
-  ManagerOutput update(const ArmState& state, uint64_t now_ns, double period) noexcept;
+  // Called once after mode selection, before governing an active reference.
+  // Lets the owner prepare fresh constraints for the selected motion/hold law.
+  using BeforeReference = void (*)(void*, bool movable) noexcept;
+  ManagerOutput update(const ArmState& state, uint64_t now_ns, double period,
+                       BeforeReference prepare = nullptr, void* context = nullptr) noexcept;
 
  private:
   bool fresh(const Command& command, uint64_t now_ns) const noexcept;
   void protect(Reason reason) noexcept;
-  CartesianReference govern(const ArmState& state, double dt, bool reset) noexcept;
+  CartesianReference govern(const ArmState& state, const CartesianReference& goal, double dt,
+                            bool reset) noexcept;
   Vector7 protective_torque(const ArmState& state) noexcept;
+  ReferenceProjection reference_projection_{nullptr};
+  bool discard_blocked_tracking_error_{false};
+  const void* projection_context_{nullptr};
+  CartesianReference safety_reference_{};
+  CartesianReference projection_input_{}, projection_goal_{};
   ManagerParameters p_;
   CartesianReference governed_{};
   bool protective_stop_{false}, protective_holding_{false};

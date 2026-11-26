@@ -1,19 +1,19 @@
 #pragma once
 
-#include "teleop_controllers/cartesian_impedance_controller.hpp"
+#include "teleop_controllers/cartesian_pd_controller.hpp"
 
 namespace teleop_controllers {
-// Cartesian impedance about a position captured when orientation mode begins.
+// Cartesian PD about a position captured when orientation mode begins.
 // The manager supplies that fixed position and removes translational feedforward.
 class OrientationOnlyController final : public TorqueController {
  public:
-  explicit OrientationOnlyController(const CartesianImpedanceParameters& parameters)
-      : impedance_(parameters) {}
-  void reset(const ArmState& state) noexcept override { impedance_.reset(state); }
+  explicit OrientationOnlyController(const CartesianPdParameters& parameters)
+      : pd_controller_(parameters) {}
+  void reset(const ArmState& state) noexcept override { pd_controller_.reset(state); }
   NominalTorque compute(const ArmState& state, const ControlReference& reference,
                         double period) noexcept override;
 
  private:
-  CartesianImpedanceController impedance_;
+  CartesianPdController pd_controller_;
 };
 }  // namespace teleop_controllers

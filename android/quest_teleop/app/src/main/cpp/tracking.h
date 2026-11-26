@@ -27,12 +27,11 @@ struct Pose {
 struct ControllerInput {
     bool trigger_active = false, squeeze_active = false;
     bool primary_active = false, secondary_active = false, menu_active = false;
-    bool thumb_active = false, thumb_click_active = false;
+    bool thumb_active = false;
     float trigger = 0.0f;   // 0..1
     float squeeze = 0.0f;   // grip, 0..1
     float thumb_x = 0.0f;   // -1..1
     float thumb_y = 0.0f;   // -1..1
-    bool thumb_click = false;
     bool primary = false;   // A (right) / X (left)
     bool secondary = false; // B (right) / Y (left)
     bool menu = false;      // left menu button only on Touch

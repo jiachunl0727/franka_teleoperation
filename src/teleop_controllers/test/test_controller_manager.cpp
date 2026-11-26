@@ -5,7 +5,7 @@
 #include <limits>
 #include <thread>
 
-#include "teleop_controllers/cartesian_impedance_controller.hpp"
+#include "teleop_controllers/cartesian_pd_controller.hpp"
 #include "teleop_controllers/controller_manager.hpp"
 #include "teleop_controllers/damping_controller.hpp"
 #include "teleop_controllers/handoff.hpp"
@@ -34,10 +34,10 @@ ft::ArmState state() {
   return s;
 }
 struct Fixture {
-  ft::CartesianImpedanceParameters impedance;
-  ft::CartesianImpedanceController cartesian{impedance};
-  ft::OrientationOnlyController orientation_only{impedance};
-  ft::DampingController damping{impedance.gain_translation, impedance.gain_rotation};
+  ft::CartesianPdParameters pd;
+  ft::CartesianPdController cartesian{pd};
+  ft::OrientationOnlyController orientation_only{pd};
+  ft::DampingController damping{pd.gain_translation, pd.gain_rotation};
   ft::PositionHoldController position_hold{ft::PositionHoldParameters{}};
   ft::ControllerManager manager;
   explicit Fixture(const ft::ManagerParameters& p = {})
@@ -93,7 +93,7 @@ TEST(Manager, ReleaseIsRequiredAndNominalLawIsPreserved) {
   ASSERT_TRUE(out.motion_enabled);
   EXPECT_DOUBLE_EQ(out.desired_twist.x(), .1);
   EXPECT_NEAR(out.target_position.x(), .41, 1e-12);
-  // With optional limits off, the original impedance law sees the mapped input.
+  // With optional limits off, the original pd law sees the mapped input.
   EXPECT_NEAR(out.nominal[0], 12.1, 1e-10);
   // Only the runtime fills the final actuator-clipped torque.
   EXPECT_TRUE(out.torque.isZero());
@@ -182,22 +182,30 @@ TEST(Manager, ReleaseRepeatsDoNotRefreshSourceAge) {
   core.accept(enabled, enabled.receipt_ns);
   EXPECT_FALSE(core.update(state(), enabled.receipt_ns, .001).motion_enabled);
 }
-TEST(Manager, OuterEnvelopeAndNonFiniteTargetsDisarm) {
-  for (bool nan : {false, true}) {
-    Fixture core(ft::ManagerParameters{});
-    arm(core);
-    auto c = command(3, true);
-    c.position.x() = nan ? std::numeric_limits<double>::quiet_NaN() : 10;
-    core.accept(c, now + 3);
-    auto out = core.update(state(), now + 3, .001);
-    EXPECT_FALSE(out.motion_enabled);
-    EXPECT_EQ(out.desired_twist, ft::Vector6::Zero());
-  }
+TEST(Manager, RemovedOuterEnvelopeAllowsFiniteTargetsAndRejectsNonFiniteTargets) {
+  Fixture finite_target;
+  arm(finite_target);
+  auto command_far_away = command(3, true);
+  command_far_away.position.x() = 10;
+  finite_target.accept(command_far_away, now + 3);
+  const auto allowed = finite_target.update(state(), now + 3, .001);
+  EXPECT_TRUE(allowed.motion_enabled);
+  EXPECT_DOUBLE_EQ(allowed.target_position.x(), 10);
+
+  Fixture non_finite_target;
+  arm(non_finite_target);
+  auto invalid = command(3, true);
+  invalid.position.x() = std::numeric_limits<double>::quiet_NaN();
+  non_finite_target.accept(invalid, now + 3);
+  const auto rejected = non_finite_target.update(state(), now + 3, .001);
+  EXPECT_FALSE(rejected.motion_enabled);
+  EXPECT_EQ(rejected.desired_twist, ft::Vector6::Zero());
 }
 TEST(Manager, CoriolisConventionIsPreservedButInvalidActuatorIntersectionIsFatal) {
   Fixture core(ft::ManagerParameters{});
   arm(core);
   auto s = state();
+  s.q = core.pd.home_joint_position;
   s.coriolis.setConstant(10000);
   s.previous_torque = ft::ManagerParameters{}.torque_limits - ft::Vector7::Constant(.2);
   auto out = core.update(s, now + 2, .001);
@@ -226,10 +234,7 @@ TEST(Manager, ParametersRejectUnapprovedCeilingChangesAndNaNs) {
   p = ft::ManagerParameters{};
   p.torque_limits[6] = 13;
   EXPECT_FALSE(p.valid());
-  p = ft::ManagerParameters{};
-  p.tool_offset = std::numeric_limits<double>::infinity();
-  EXPECT_FALSE(p.valid());
-  ft::CartesianImpedanceParameters gains;
+  ft::CartesianPdParameters gains;
   ASSERT_TRUE(gains.valid());
   gains.gain_translation = 0;
   EXPECT_FALSE(gains.valid());
@@ -466,7 +471,7 @@ TEST(Manager, InvalidLawResultAndZeroPeriodTerminateBeforeSafetyHandoff) {
 }
 
 TEST(TorqueController, IncompatibleReferenceIsAnExplicitFault) {
-  ft::CartesianImpedanceController cartesian({});
+  ft::CartesianPdController cartesian({});
   ft::HomingController homing({});
   ft::PositionHoldController hold({});
   EXPECT_EQ(cartesian.compute(state(), ft::JointReference{}, .001).fault,
@@ -797,4 +802,187 @@ TEST(Manager, TrackingProtectionCanBeEnabledWithoutReferenceShaping) {
     }
     EXPECT_TRUE(stopped);
   }
+}
+
+TEST(Manager, OptionalReferenceProjectionKeepsBoundarySlidingAndRetreatConnected) {
+  Fixture core;
+  core.manager.reference_projection(
+      [](const void*, const ft::Vector6& input) noexcept -> ft::Vector6 {
+        auto result = input;
+        result[0] = std::max(0., result[0]);
+        return result;
+      },
+      nullptr);
+  arm(core);
+  auto measured = state();
+  auto inward = command(3, true);
+  inward.position << .35, .02, .4;
+  inward.twist << -.1, .2, 0, 0, 0, 0;
+  core.accept(inward, now + 3);
+  const auto sliding = core.update(measured, now + 3, .001);
+  EXPECT_TRUE(sliding.motion_enabled);
+  EXPECT_FALSE(sliding.protective_stop);
+  EXPECT_NEAR(sliding.target_position.x(), .4, 1e-12);
+  EXPECT_NEAR(sliding.target_position.y(), .02, 1e-12);
+  EXPECT_NEAR(sliding.desired_twist.x(), 0, 1e-12);
+  EXPECT_NEAR(sliding.desired_twist.y(), .2, 1e-12);
+  auto retreat = command(4, true);
+  retreat.position << .43, .03, .4;
+  core.accept(retreat, now + 4);
+  const auto outward = core.update(measured, now + 4, .001);
+  EXPECT_TRUE(outward.motion_enabled);
+  EXPECT_NEAR(outward.target_position.x(), .48, 1e-12);  // .08 retreat from the held .4 anchor.
+  EXPECT_NEAR(outward.target_position.y(), .03, 1e-12);
+}
+
+TEST(Manager, BlockedInputDoesNotAccumulateAndSmallRetreatWorksWithEitherShapingMode) {
+  for (bool shaping : {false, true}) {
+    ft::ManagerParameters parameters;
+    parameters.reference_shaping_enabled = shaping;
+    Fixture core(parameters);
+    core.manager.reference_projection(
+        [](const void*, const ft::Vector6& input) noexcept -> ft::Vector6 {
+          auto result = input;
+          result[2] = std::max(0., result[2]);
+          return result;
+        },
+        nullptr);
+    arm(core);
+    auto measured = state();
+    auto request = command(3, true);
+    request.position.z() = .25;
+    request.twist[2] = -.05;
+    core.accept(request, now + 3);
+    for (int i = 0; i < 30; ++i) {
+      const auto held = core.update(measured, now + 3 + i, .001);
+      EXPECT_TRUE(held.motion_enabled);
+      EXPECT_NEAR(held.target_position.z(), .4, 1e-12);
+      EXPECT_NEAR(held.desired_twist[2], 0, 1e-12);
+    }
+    request = command(4, true);
+    request.position.z() = .251;   // Still far beyond the held boundary, but moving OUT.
+    request.position.x() += .001;  // Tangential movement remains available.
+    request.twist[2] = .01;
+    core.accept(request, now + 40);
+    const auto retreat = core.update(measured, now + 40, .001);
+    EXPECT_TRUE(retreat.motion_enabled);
+    EXPECT_GT(retreat.target_position.z(), .4);
+    EXPECT_GT(retreat.target_position.x(), .4);
+    EXPECT_GT(retreat.desired_twist[2], 0);
+  }
+}
+
+TEST(Manager, RotationalBoundaryHoldsAcceptedOrientationAndAllowsSmallReversal) {
+  Fixture core;
+  core.manager.reference_projection(
+      [](const void*, const ft::Vector6& input) noexcept -> ft::Vector6 {
+        auto result = input;
+        result[5] = std::max(0., result[5]);
+        return result;
+      },
+      nullptr);
+  arm(core);
+  auto measured = state();
+  auto request = command(3, true);
+  request.orientation = Eigen::AngleAxisd(-.2, Eigen::Vector3d::UnitZ());
+  request.twist[5] = -.05;
+  core.accept(request, now + 3);
+  const auto held = core.update(measured, now + 3, .001);
+  EXPECT_TRUE(held.target_orientation.isApprox(measured.orientation, 1e-12));
+  EXPECT_NEAR(held.desired_twist[5], 0, 1e-12);
+  request.sequence = 4;
+  request.receipt_ns = request.source_ns = now + 4;
+  request.orientation = Eigen::AngleAxisd(-.199, Eigen::Vector3d::UnitZ());
+  request.twist[5] = .01;
+  core.accept(request, now + 4);
+  const auto retreat = core.update(measured, now + 4, .001);
+  EXPECT_NEAR(Eigen::AngleAxisd(retreat.target_orientation).angle(), .001, 1e-12);
+  EXPECT_GT(retreat.desired_twist[5], 0);
+  core.accept(command(5, false, true), now + 5);
+  core.update(measured, now + 5, .001);
+  core.accept(command(6, true), now + 6);
+  const auto reengaged = core.update(measured, now + 6, .001);
+  EXPECT_TRUE(reengaged.target_orientation.isApprox(measured.orientation, 1e-12));
+}
+
+TEST(Manager, CbfFailureLatchesProtectiveBrakingAndHold) {
+  Fixture core;
+  auto measured = state();
+  measured.dq[0] = .1;
+  core.manager.request_protective_stop(ft::Reason::cbf_failure);
+  const auto stopped = core.update(measured, now + 3, .001);
+  EXPECT_TRUE(stopped.protective_stop);
+  EXPECT_FALSE(stopped.motion_enabled);
+  EXPECT_EQ(stopped.reason, ft::Reason::cbf_failure);
+  EXPECT_TRUE(stopped.nominal.allFinite());
+}
+
+TEST(Manager, ConstraintPreparationSeesReleaseAndEngagementBeforeReferenceProjection) {
+  Fixture core;
+  auto s = state();
+  struct Context {
+    int preparations{0}, projections{0};
+    bool movable{false};
+  } context;
+  const auto prepare = [](void* opaque, bool movable) noexcept {
+    auto& c = *static_cast<Context*>(opaque);
+    ++c.preparations;
+    c.movable = movable;
+  };
+  core.manager.reference_projection(
+      [](const void* opaque, const ft::Vector6& step) noexcept -> ft::Vector6 {
+        auto& c = *const_cast<Context*>(static_cast<const Context*>(opaque));
+        EXPECT_TRUE(c.movable);
+        EXPECT_GT(c.preparations, 0);
+        ++c.projections;
+        return step;
+      },
+      &context);
+  auto output = core.manager.update(s, now, .001, prepare, &context);
+  EXPECT_EQ(context.preparations, 1);
+  EXPECT_FALSE(context.movable);
+  EXPECT_TRUE(output.control.position_hold_active);
+  arm(core);
+  output = core.manager.update(s, now + 2, .001, prepare, &context);
+  EXPECT_EQ(context.preparations, 2);
+  EXPECT_TRUE(context.movable);
+  EXPECT_TRUE(output.control.motion_enabled);
+  EXPECT_GT(context.projections, 0);
+  const int projections = context.projections;
+  core.accept(command(3, false, true), now + 3);
+  output = core.manager.update(s, now + 3, .001, prepare, &context);
+  EXPECT_EQ(context.preparations, 3);
+  EXPECT_FALSE(context.movable);
+  EXPECT_TRUE(output.control.position_hold_active);
+  EXPECT_EQ(context.projections, projections);
+}
+
+TEST(Manager, BindingConstraintDiscardsStoredTrackingErrorAndRetreatsWithoutUnwinding) {
+  Fixture core;
+  bool blocked = false;
+  core.manager.reference_projection(
+      [](const void* opaque, const ft::Vector6& input) noexcept -> ft::Vector6 {
+        auto out = input;
+        if (*static_cast<const bool*>(opaque) && out[0] > 0)
+          out[0] = 0;
+        return out;
+      },
+      &blocked, true);
+  arm(core);
+  const auto measured = state();
+  auto request = command(3, true);
+  request.position.x() = .41;
+  core.accept(request, now + 3);
+  EXPECT_NEAR(core.update(measured, now + 3, .001).target_position.x(), .41, 1e-12);
+  blocked = true;
+  request = command(4, true);
+  request.position.x() = .42;
+  core.accept(request, now + 4);
+  // Discard the existing 10 mm inward tracking lead, as well as the new input.
+  EXPECT_NEAR(core.update(measured, now + 4, .001).target_position.x(), .4, 1e-12);
+  request = command(5, true);
+  request.position.x() = .4199;
+  core.accept(request, now + 5);
+  // A 0.1 mm reversal acts immediately; it does not unwind the blocked 20 mm.
+  EXPECT_NEAR(core.update(measured, now + 5, .001).target_position.x(), .3999, 1e-12);
 }

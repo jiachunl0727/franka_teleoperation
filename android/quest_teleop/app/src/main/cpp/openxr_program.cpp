@@ -90,7 +90,6 @@ struct OpenXrProgram::Impl {
     XrAction trigger_action = XR_NULL_HANDLE;
     XrAction squeeze_action = XR_NULL_HANDLE;
     XrAction thumbstick_action = XR_NULL_HANDLE;
-    XrAction thumbclick_action = XR_NULL_HANDLE;
     XrAction primary_action = XR_NULL_HANDLE;
     XrAction secondary_action = XR_NULL_HANDLE;
     XrAction menu_action = XR_NULL_HANDLE;
@@ -422,7 +421,6 @@ bool OpenXrProgram::Impl::CreateActions() {
     if (!make("trigger", "Trigger", XR_ACTION_TYPE_FLOAT_INPUT, &trigger_action)) return false;
     if (!make("squeeze", "Squeeze", XR_ACTION_TYPE_FLOAT_INPUT, &squeeze_action)) return false;
     if (!make("thumbstick", "Thumbstick", XR_ACTION_TYPE_VECTOR2F_INPUT, &thumbstick_action)) return false;
-    if (!make("thumbclick", "Thumbstick Click", XR_ACTION_TYPE_BOOLEAN_INPUT, &thumbclick_action)) return false;
     if (!make("primary", "Primary Button", XR_ACTION_TYPE_BOOLEAN_INPUT, &primary_action)) return false;
     if (!make("secondary", "Secondary Button", XR_ACTION_TYPE_BOOLEAN_INPUT, &secondary_action)) return false;
     if (!make("menu", "Menu Button", XR_ACTION_TYPE_BOOLEAN_INPUT, &menu_action)) return false;
@@ -460,8 +458,6 @@ bool OpenXrProgram::Impl::SuggestBindings() {
         add(squeeze_action, "/user/hand/right/input/squeeze/value");
         add(thumbstick_action, "/user/hand/left/input/thumbstick");
         add(thumbstick_action, "/user/hand/right/input/thumbstick");
-        add(thumbclick_action, "/user/hand/left/input/thumbstick/click");
-        add(thumbclick_action, "/user/hand/right/input/thumbstick/click");
         add(primary_action, "/user/hand/left/input/x/click");
         add(primary_action, "/user/hand/right/input/a/click");
         add(secondary_action, "/user/hand/left/input/y/click");
@@ -820,8 +816,8 @@ void OpenXrProgram::Impl::FillHudPixels(const TrackingFrame& f) {
         snprintf(line, sizeof(line), "  %s %d/%d %d/%d MENU %d/%d", buttons,
                  in.primary, in.primary_active, in.secondary, in.secondary_active, in.menu, in.menu_active);
         W_(line, 210, 210, 140);
-        snprintf(line, sizeof(line), "  ST %+.2f %+.2f/%d CLICK %d/%d", in.thumb_x, in.thumb_y,
-                 in.thumb_active, in.thumb_click, in.thumb_click_active);
+        snprintf(line, sizeof(line), "  ST %+.2f %+.2f/%d", in.thumb_x, in.thumb_y,
+                 in.thumb_active);
         W_(line, 210, 210, 140);
     };
     pose_lines("LEFT", f.left_grip);
@@ -1053,7 +1049,6 @@ void OpenXrProgram::Locate(TrackingFrame* out, int64_t predictedDisplayTime) {
         in.trigger = impl_->ReadFloat(impl_->trigger_action, h, &in.trigger_active);
         in.squeeze = impl_->ReadFloat(impl_->squeeze_action, h, &in.squeeze_active);
         impl_->ReadStick(impl_->thumbstick_action, h, &in.thumb_x, &in.thumb_y, &in.thumb_active);
-        in.thumb_click = impl_->ReadBool(impl_->thumbclick_action, h, &in.thumb_click_active);
         in.primary = impl_->ReadBool(impl_->primary_action, h, &in.primary_active);
         in.secondary = impl_->ReadBool(impl_->secondary_action, h, &in.secondary_active);
         in.menu = impl_->ReadBool(impl_->menu_action, h, &in.menu_active);

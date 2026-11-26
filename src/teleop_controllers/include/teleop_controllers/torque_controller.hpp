@@ -9,6 +9,9 @@ struct CartesianReference {
   Eigen::Vector3d position{Eigen::Vector3d::Zero()};
   Eigen::Quaterniond orientation{1, 0, 0, 0};
   Vector6 twist{Vector6::Zero()};
+  // Mapped teleoperation has no acceleration field; its feedforward stays zero,
+  // matching OSCBF's hardware demo. Explicit references may supply acceleration.
+  Vector6 acceleration{Vector6::Zero()};
 };
 struct JointReference {
   Vector7 position{Vector7::Zero()}, velocity{Vector7::Zero()};

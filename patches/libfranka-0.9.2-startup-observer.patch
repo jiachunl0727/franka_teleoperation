@@ -1,0 +1,139 @@
+diff --git a/include/franka/robot.h b/include/franka/robot.h
+index 179686a..9a13711 100644
+--- a/include/franka/robot.h
++++ b/include/franka/robot.h
+@@ -173,6 +173,20 @@ class Robot {
+                bool limit_rate = true,
+                double cutoff_frequency = kDefaultCutoffFrequency);
+ 
++  /**
++   * Torque control with observations of newly received states during startup.
++   * The observer runs on the control owner while awaiting the Move response and
++   * mode transition. It cannot supply commands and must be bounded/non-blocking.
++   * No concurrent read operation or additional connection is created. An observer
++   * exception attempts cancellation and propagates. Startup is bounded to one second (plus the
++   * underlying receive/cancellation timeouts). Ordinary control() is unchanged.
++   */
++  void controlWithStartupObserver(
++      std::function<Torques(const RobotState&, franka::Duration)> control_callback,
++      std::function<void(const RobotState&)> startup_observer,
++      bool limit_rate = true,
++      double cutoff_frequency = kDefaultCutoffFrequency);
++
+   /**
+    * Starts a control loop for sending joint-level torque commands and joint positions.
+    *
+diff --git a/src/robot.cpp b/src/robot.cpp
+index a8f9d4c..9af42a4 100644
+--- a/src/robot.cpp
++++ b/src/robot.cpp
+@@ -56,6 +56,33 @@ void Robot::control(std::function<Torques(const RobotState&, franka::Duration)>
+   loop();
+ }
+ 
++void Robot::controlWithStartupObserver(
++    std::function<Torques(const RobotState&, franka::Duration)> control_callback,
++    std::function<void(const RobotState&)> startup_observer,
++    bool limit_rate,
++    double cutoff_frequency) {
++  std::unique_lock<std::mutex> lock(control_mutex_, std::try_to_lock);
++  if (!lock.owns_lock()) {
++    throw InvalidOperationException("libfranka: conflicting control/read operation during startup.");
++  }
++  if (!startup_observer) {
++    throw std::invalid_argument("libfranka: empty startup observer.");
++  }
++  impl_->setStartupStateObserver(std::move(startup_observer));
++  try {
++    ControlLoop<JointVelocities> loop(
++        *impl_, std::move(control_callback),
++        [](const RobotState&, Duration) -> JointVelocities {
++          return {{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
++        }, limit_rate, cutoff_frequency);
++    impl_->setStartupStateObserver({});
++    loop();
++  } catch (...) {
++    impl_->setStartupStateObserver({});
++    throw;
++  }
++}
++
+ void Robot::control(
+     std::function<Torques(const RobotState&, franka::Duration)> control_callback,
+     std::function<JointPositions(const RobotState&, franka::Duration)> motion_generator_callback,
+diff --git a/src/robot_impl.cpp b/src/robot_impl.cpp
+index 0638d13..c5a33dc 100644
+--- a/src/robot_impl.cpp
++++ b/src/robot_impl.cpp
+@@ -220,6 +220,48 @@ uint32_t Robot::Impl::startMotion(
+       throw std::invalid_argument("libfranka robot: Invalid controller mode given.");
+   }
+ 
++  if (startup_state_observer_) {
++    using Move = research_interface::robot::Move;
++    const uint32_t move_id = network_->tcpSendRequest<Move>(
++        controller_mode, motion_generator_mode, maximum_path_deviation, maximum_goal_pose_deviation);
++    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
++    try {
++      const auto observe_next = [&]() {
++        if (std::chrono::steady_clock::now() >= deadline) {
++          throw NetworkException("libfranka: observed control startup exceeded one second.");
++        }
++        const auto state = update(nullptr, nullptr);
++        startup_state_observer_(state);
++      };
++      // Keep consuming actual UDP observations while the first Move response is
++      // pending. No torque or motion command is supplied by the observer.
++      while (!network_->tcpReceiveResponse<Move>(move_id, [&](const Move::Response& response) {
++        // This response acknowledges our request. Mode observations may already
++        // show its transition; the ordinary pre-observation check would wrongly
++        // classify a valid MotionStarted acknowledgement as an extra motion.
++        if (response.status != Move::Status::kMotionStarted)
++          handleCommandResponse<Move>(response);
++      })) {
++        observe_next();
++      }
++      while (motion_generator_mode_ != current_move_motion_generator_mode_ ||
++             controller_mode_ != current_move_controller_mode_) {
++        if (network_->tcpReceiveResponse<Move>(move_id, [&](const Move::Response& response) {
++              handleCommandResponse<Move>(response);
++            }))
++          break;
++        observe_next();
++      }
++      logger_.flush();
++      return move_id;
++    } catch (...) {
++      // ControlLoop's constructor has not completed yet, so its usual exception
++      // cancellation is not active. Preserve the initiating exception.
++      try { cancelMotion(move_id); } catch (...) {}
++      throw;
++    }
++  }
++
+   const uint32_t move_command_id = executeCommand<research_interface::robot::Move>(
+       controller_mode, motion_generator_mode, maximum_path_deviation, maximum_goal_pose_deviation);
+ 
+diff --git a/src/robot_impl.h b/src/robot_impl.h
+index b5a5a17..0cbdecd 100644
+--- a/src/robot_impl.h
++++ b/src/robot_impl.h
+@@ -34,6 +34,10 @@ class Robot::Impl : public RobotControl {
+ 
+   RobotState readOnce();
+ 
++  void setStartupStateObserver(std::function<void(const RobotState&)> observer) {
++    startup_state_observer_ = std::move(observer);
++  }
++
+   ServerVersion serverVersion() const noexcept;
+   RealtimeConfig realtimeConfig() const noexcept override;
+ 
+@@ -117,6 +121,7 @@ class Robot::Impl : public RobotControl {
+   std::unique_ptr<Network> network_;
+ 
+   Logger logger_;
++  std::function<void(const RobotState&)> startup_state_observer_;
+ 
+   const RealtimeConfig realtime_config_;  // NOLINT(readability-identifier-naming)
+   uint16_t ri_version_;

@@ -65,7 +65,6 @@ _DEFAULTS = dict(
     translation_scale=1.0,
     rotation_scale=1.0,
     feedforward_scale=1.0,
-    twist_filter_cutoff_hz=10.0,
     pose_filter="none",
     velocity_filter="low_pass",
     pose_interpolation="none",
@@ -85,12 +84,13 @@ _DEFAULTS = dict(
 
 
 def load_arms(path):
-    data = read_mapping(path)
     from teleop_bringup.runtime_configuration import (
         unified_settings,
         bridge_controller_topic,
+        load_runtime_document,
     )
 
+    data = load_runtime_document(path)
     source = data
     if "pipeline" in data:
         unified_settings(data)
@@ -105,13 +105,13 @@ def load_arms(path):
         "controller",
         "robot_ip",
         "controller_enabled",
-        "operator_confirm",
         "command_topic",
         "target_pose_topic",
         "measured_pose_topic",
         "controller_state_topic",
         "state_topic",
         "reference_to_robot_xyzw",
+        "twist_filter_cutoff_hz",
     }
     for name, raw in data["arms"].items():
         if (
@@ -142,11 +142,8 @@ def load_arms(path):
         controller = raw.get("controller", "right")
         if controller not in ("left", "right"):
             raise ValueError(f"{name}: controller must be left or right")
-        for key in ("controller_enabled", "operator_confirm"):
-            if boolean(raw.get(key, False), key):
-                raise ValueError(
-                    f"{name}: robot-free launch does not activate hardware; {key} must be false"
-                )
+        if boolean(raw.get("controller_enabled", False), "controller_enabled"):
+            raise ValueError(f"{name}: controller_enabled must be false")
         ip = raw.get("robot_ip", "")
         if not isinstance(ip, str) or (ip and ip in ips):
             raise ValueError("nonempty robot_ip values must be unique strings")
@@ -154,8 +151,10 @@ def load_arms(path):
             ips.add(ip)
         p = dict(_DEFAULTS)
         p.update({key: raw[key] for key in _DEFAULTS if key in raw})
-        if "velocity_filter_cutoff_hz" not in raw:
-            p["velocity_filter_cutoff_hz"] = p["twist_filter_cutoff_hz"]
+        if "twist_filter_cutoff_hz" in raw:
+            legacy_cutoff = number(raw["twist_filter_cutoff_hz"], f"{name}.twist_filter_cutoff_hz")
+            if "velocity_filter_cutoff_hz" not in raw:
+                p["velocity_filter_cutoff_hz"] = legacy_cutoff
         modes = {"pose_filter", "velocity_filter"}
         interpolations = {"pose_interpolation", "velocity_interpolation"}
         for key in modes:

@@ -9,6 +9,6 @@ NominalTorque OrientationOnlyController::compute(const ArmState& state,
     return {Vector7::Zero(), StateFault::invalid_reference};
   CartesianReference held = *target;
   held.twist.head<3>().setZero();
-  return impedance_.compute(state, held, period);
+  return pd_controller_.compute(state, held, period);
 }
 }  // namespace teleop_controllers

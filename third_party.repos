@@ -1,4 +1,16 @@
 repositories:
+  osqp_0_6_3:
+    type: git
+    url: https://github.com/osqp/osqp.git
+    version: 0dd00a578cf1c2691c5c379965d504c75bf6cfad
+  qpoases_3_2_1:
+    type: git
+    url: https://github.com/coin-or/qpOASES.git
+    version: 51d3fbea30142d3acbf40cf7a1c519efc27ea67b
+  piqp_0_6_3:
+    type: git
+    url: https://github.com/PREDICT-EPFL/piqp.git
+    version: 8279ed73a42ddc55e3a8be561dfab7be9b3146b8
   libfranka_0_9_2:
     type: git
     url: https://github.com/LCAS/libfranka.git

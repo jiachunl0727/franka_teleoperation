@@ -6,6 +6,13 @@
 #include <stdexcept>
 
 namespace teleop_controllers {
+inline void require_startup_observation(const franka::RobotState& state) {
+  if ((state.robot_mode == franka::RobotMode::kIdle ||
+       state.robot_mode == franka::RobotMode::kMove) && !state.current_errors)
+    return;
+  throw std::runtime_error("invalid robot mode/current errors during observed FCI startup");
+}
+
 inline void require_idle_control_start(const franka::RobotState& state) {
   if (state.robot_mode == franka::RobotMode::kIdle && !state.current_errors)
     return;

@@ -1,0 +1,5 @@
+test_hardware_startup 2 0.026529
+test_inter_arm_policy 2 0.0265677
+test_inter_arm_startup_transport 2 0.0541445
+test_controller_manager 2 0.0300458
+---

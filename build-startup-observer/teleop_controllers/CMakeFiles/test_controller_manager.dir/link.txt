@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/test_controller_manager.dir/test/test_controller_manager.cpp.o -o test_controller_manager  gtest/libgtest_main.a gtest/libgtest.a libcontroller_manager.a -pthread /usr/lib/x86_64-linux-gnu/libtinyxml2.so 

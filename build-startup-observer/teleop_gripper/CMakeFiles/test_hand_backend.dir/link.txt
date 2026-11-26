@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/test_hand_backend.dir/test/test_hand_backend.cpp.o CMakeFiles/test_hand_backend.dir/src/hand_worker.cpp.o -o test_hand_backend  -Wl,-rpath,/ws/install/libfranka/lib gtest/libgtest_main.a gtest/libgtest.a /ws/install/libfranka/lib/libfranka.so.0.9.2 libhand_core.a -pthread 

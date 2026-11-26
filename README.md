@@ -15,9 +15,11 @@ are optional and disabled by default. Enable them separately with
 and `controller.cartesian_wrench_limits_enabled`. Torque magnitude and slew-rate
 clipping remain active independently.
 
-The CBF layer and its settings have been removed. There is currently no table,
-collision, singularity or CBF joint-state enforcement. See the
-[package ownership contract](docs/CONTROLLER_ARCHITECTURE.md).
+The linked `cbf_safety_filter` library implements joint, table, collision and
+singularity constraints. CBF defaults to disabled when omitted. If enabled on
+hardware, select `cbf.hardware_mode: shadow` for diagnostics or `filtered` to apply
+verified corrections. The saved single- and dual-Panda YAMLs select filtered
+mode. See the [commissioning procedure](docs/cbf/HARDWARE_COMMISSIONING.md).
 
 | Terminal | Where commands run |
 | --- | --- |
@@ -87,28 +89,24 @@ docker rm -f franka-teleop
 
 ## 2. Set the unified configuration
 
-**Host 2:** edit the single-arm template directly (use `dual_panda.yaml` for two arms):
-
-```bash
-cd ~/franka_teleoperation
-nano src/teleop_bringup/config/single_panda.yaml
-```
-
-Select a file explicitly: `single_panda.yaml` for one arm or `dual_panda.yaml`
-for two arms, both under `src/teleop_bringup/config/`. Package-local configs remain the defaults
-for standalone launches; no config copies under workspace `config/` are needed.
-The symlink-install build makes source config edits available without rebuilding;
-restart the launch after changing settings.
+**Host 2:** edit `src/teleop_bringup/config/single_panda/single_panda.yaml` for one
+arm or `src/teleop_bringup/config/dual_panda/dual_panda.yaml` for two.
+With a symlink install, restart the launch after editing an existing setting.
+Rebuild after adding or relocating package assets so the installed profiles are available.
 
 | YAML section | Configure here |
 | --- | --- |
-| `pipeline` | Backend, mode and feature switches; `single_controller` selects the hand only in the single-arm template |
-| `quest.bridge` | USB receiver port, bind address, namespace and clock/freshness limits; retain port `45454` with the current Quest app |
-| `arms.<arm_name>` | Actual `robot_ip`, controller assignment, namespace/base frame, input/output topics, calibrated basis, scales, trigger thresholds and mapper timing |
-| `controller` | Impedance gains, reference/effort/motion protection limits, actuator limits/rate, tool envelope and homing settings |
-| `hand` | Finger speeds, cable diameter/tolerance, force, joystick thresholds and timing |
-| `arm_settings.<arm_name>` | Per-arm controller/Hand overrides; names must match `arms` |
-| `recording` | `mode: menu/continuous`, namespace, Menu input/debounce, selected topics, output folder and storage plugin |
+| `pipeline` | Backend, arm count and enabled features. In single mode, select the Quest hand. |
+| `<feature>.config_file` | Each Quest, controller, Hand, recording and CBF section selects its own file in the owning package’s `config/single_panda/` or `config/dual_panda/` directory. |
+| `quest.bridge`, `arms.<arm_name>` | USB port, robot IP, controller assignment, frame and calibration. Custom topics can override the derived routes. |
+| `controller`, `hand` | Model, control law, derating, home pose and calibrated grasp settings. |
+| `cbf` | Enable CBF, select its numeric profile and set its hardware commissioning mode. |
+| `arm_settings.<arm_name>` | Controller, Hand or CBF overrides for a named arm. |
+| `recording` | Mode, topics and output folder. |
+
+Named profiles supply shared settings. Explicit runtime fields override them,
+and per-arm overrides apply last. See the [configuration inventory](docs/LAUNCH_CONFIGURATION_INVENTORY.md)
+for the full parameter list and standalone defaults.
 
 Inspect the selected file and set `pipeline.backend: mock` for robot-free work.
 The working single-arm file contains operator hardware settings.
@@ -118,10 +116,9 @@ in [CONTROLLER_ARCHITECTURE.md](docs/CONTROLLER_ARCHITECTURE.md).
 Set `pipeline.start_hand: false` to omit fingers,
 or `pipeline.homing_enabled: false` to omit home gestures.
 
-Hardware authorization is the explicit `operator_confirm:=true` launch argument;
-it cannot be saved in YAML. Internal mapper activation guards retain their fixed
-false defaults and are omitted from the templates. Use calibrated IPs, gains and mapping rather than
-assuming the supplied software reference values fit your installation.
+The selected YAML controls hardware startup. With `pipeline.backend: hardware`,
+launch opens the configured connections and an enabled Hand calibrates at
+startup. Use calibrated IPs, gains, and mapping values for your installation.
 
 Use floating-point YAML values and arrays for gains/transforms. The mapping basis
 is `[qx,qy,qz,qw]`; the base-to-world transform is `[x,y,z,qx,qy,qz,qw]` in metres.
@@ -186,7 +183,7 @@ with its calibration stroke clear. Enabling Hand starts one calibration at launc
 
 ```bash
 ros2 launch teleop_bringup teleoperation.launch.py \
-  runtime_config:=/ws/src/teleop_bringup/config/single_panda.yaml operator_confirm:=true
+  runtime_config:=/ws/src/teleop_bringup/config/single_panda/single_panda.yaml
 ```
 
 The file selects single/dual mode and every feature. Only one arm owner per
@@ -259,14 +256,14 @@ selected YAML. Defaults give 30.45 Nm on joints 1–4, 4.2 Nm on joints 5–7 an
 350 Nm/s. Absolute controller caps may tighten them. Every nominal mode uses
 this package-local clipping; there is no dependency on a safety layer.
 
-For dual, edit `src/teleop_bringup/config/dual_panda.yaml`: set actual distinct
-IPs, calibrate each controller mapping, supply both surveyed base transforms
-under `arm_settings`, and set `pipeline.backend: hardware`. Stop the single
+For dual, edit `src/teleop_bringup/config/dual_panda/dual_panda.yaml`: set actual distinct
+IPs, calibrate each controller mapping, check both surveyed base transforms
+in the selected CBF geometry files, and set `pipeline.backend: hardware`. Stop the single
 launch, activate FCI for both arms, then **CONTAINER 1**:
 
 ```bash
 ros2 launch teleop_bringup teleoperation.launch.py \
-  runtime_config:=/ws/src/teleop_bringup/config/dual_panda.yaml operator_confirm:=true
+  runtime_config:=/ws/src/teleop_bringup/config/dual_panda/dual_panda.yaml
 ```
 
 Both enabled Hands calibrate at startup. Dual geometry/timing requires separate
@@ -274,23 +271,15 @@ commissioning. Use one dual launch rather than two single-arm owners.
 
 ## 5. Overall launch arguments
 
-The overall launch exposes exactly two arguments. **`runtime_config` is required
-and has no default path.** Mode, backend, features, port and recording settings
-come exclusively from the selected YAML.
+The combined launch accepts one required argument, `runtime_config`, with no
+default path. It selects the single- or dual-Panda YAML. The YAML controls the
+mode, backend, enabled features, port, and recording settings.
 
-| Argument | Required / default | Purpose |
-| --- | --- | --- |
-| `runtime_config` | Required; no default | Path to the complete `single_panda.yaml`, `dual_panda.yaml` or another file with the same schema |
-| `operator_confirm` | Defaults to `false`; `true` required with hardware backend | Explicit authorization to open real FCI connections and perform enabled Hand startup calibration |
-
-`operator_confirm` is unnecessary for mock operation. It does not arm the
-trigger, validate installation settings or replace an emergency stop. It prevents
-loading a hardware configuration from automatically authorizing physical operation.
 For mock operation, after keeping `pipeline.backend: mock`, **CONTAINER 1**:
 
 ```bash
 ros2 launch teleop_bringup teleoperation.launch.py \
-  runtime_config:=/ws/src/teleop_bringup/config/single_panda.yaml
+  runtime_config:=/ws/src/teleop_bringup/config/single_panda/single_panda.yaml
 ```
 
 All other configuration and feature switches must be edited in YAML; there are
@@ -314,28 +303,43 @@ Command form: `ros2 launch <package> <launch_file> argument:=value`.
 | --- | --- |
 | `teleop_bringup quest_usb_bridge.launch.py` | Quest USB bridge only; namespace and bridge parameters |
 | `teleop_bringup pose_mapper.launch.py` | Pose mapper only; namespace, topics and mapper parameters |
-| `teleop_bringup quest_teleop.launch.py` | Bringup `config/arms.yaml`; `arms_config`, `mode`, `single_controller`, bridge/mapper switches and bridge parameters |
-| `teleop_bringup cartesian_impedance_controller.launch.py` | Controller `controllers.yaml`; `runtime_config`, `arms_config`, backend/confirmation/mode and homing settings |
+| `teleop_bringup quest_teleop.launch.py` | Bringup `config/single_panda/arms.yaml`; `arms_config`, `mode`, `single_controller`, bridge/mapper switches and bridge parameters |
+| `teleop_bringup cartesian_pd_controller.launch.py` | Controller `controllers.yaml`; `runtime_config`, `arms_config`, backend/mode and homing settings |
 | `teleop_bringup homing.launch.py` | Same owner/configuration with homing enabled; no automatic home |
-| `teleop_bringup gripper.launch.py` | Package `gripper.yaml`; `runtime_config`, `arms_config`, backend/confirmation/mode; one startup calibration |
+| `teleop_bringup gripper.launch.py` | Package `gripper.yaml`; `runtime_config`, `arms_config`, backend/mode; one startup calibration |
 | `teleop_bringup recording.launch.py` | Package `recording.yaml`; `recording_config`, `arms_config`, recording mode/topics/output/namespace |
 
 Show complete arguments for any launch in **CONTAINER 2**:
 
 ```bash
 ros2 launch teleop_bringup teleoperation.launch.py \
-  runtime_config:=/ws/src/teleop_bringup/config/single_panda.yaml --show-args
+  runtime_config:=/ws/src/teleop_bringup/config/single_panda/single_panda.yaml --show-args
 ```
 
 The arm controller separates `controller_runtime.cpp` (ROS, mock/hardware and
 FCI ownership), `controller_manager.cpp` (arming and nominal-source selection),
-and the Cartesian impedance, position hold, fault damping and homing implementations.
+and the Cartesian PD, position hold, fault damping and homing implementations.
 All laws share a joint-torque interface and final safety path;
 `joint_motion_generator.cpp` remains the homing reference generator. Existing
 launch commands and configuration keys are unchanged.
 
 For configuration and controller extension details, see
 [docs/PACKAGE_STRUCTURE.md](docs/PACKAGE_STRUCTURE.md#arm-runtime-and-controller-structure).
+
+Select the Cartesian teleoperation law with `controller.cartesian_control_law`:
+`cartesian_pd` (existing default) or `inverse_dynamics`. The inverse-dynamics
+option uses the OSCBF operational-space structure, preserves configured physical
+stiffness, and computes modal damping from task inertia and stiffness. Both laws
+use the existing final torque clipping and optional CBF. Parameters, equations
+and recorded replay results: [inverse-dynamics controller](docs/INVERSE_DYNAMICS_CONTROLLER.md).
+
+Runtime dynamics now use the pinned OSCBF Panda URDF through a native,
+allocation-free M/c/g calculation shared by nominal control and CBF. Select the
+file with `controller.dynamics_model_file`; libfranka supplies robot communication
+and feedback. See [URDF dynamics](docs/URDF_DYNAMICS.md).
+The confirmed `.101` installation uses the augmented 5 g UMI finger model.
+[Finger geometry and offline avoidance checks](docs/cbf/UMI_FINGERS_AND_OFFLINE_AVOIDANCE.md)
+describe its mounting, full-opening cover and original-bag replay commands.
 
 ## Trajectory monitoring and experiment reports
 
@@ -351,7 +355,7 @@ intermediate waypoints when input arrives faster than segments complete.
 
 While holding the trigger, hold Y on the left Quest controller or B on the
 right to follow orientation while holding the measured end-effector position.
-Release Y or B to return to Cartesian impedance tracking without releasing
+Release Y or B to return to Cartesian PD tracking without releasing
 the trigger. The latest live tracking view is `/<arm>/tracking_status`.
 The default bag profile records controller input, mapped command, measured
 pose, and `/<arm>/tracking_samples`; its CSV exporter selects only trajectory
@@ -383,5 +387,7 @@ position measurement. See [Hand control details](docs/TELEOPERATION_RUNTIME.md#h
 
 The Cartesian modes support a dynamically consistent nullspace posture
 preference toward `controller.home_joint_position`, shared with homing. This is
-a nominal controller preference. The removed CBF layer supplies no enforcement.
+a nominal controller preference. Optional CBF software validation is described in `docs/cbf/IMPLEMENTATION.md`.
 See [CONTROLLER_ARCHITECTURE.md](docs/CONTROLLER_ARCHITECTURE.md).
+
+Collision/singularity design and mock evidence: [implementation](docs/cbf/COLLISION_AND_SINGULARITY.md), [verification report](docs/cbf/AVOIDANCE_VERIFICATION.md), [short hardware procedure](docs/cbf/HARDWARE_COMMISSIONING.md).

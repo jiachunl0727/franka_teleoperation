@@ -15,6 +15,9 @@ def generate_launch_description():
             DeclareLaunchArgument("max_clock_sync_age_ms", default_value="3000"),
             DeclareLaunchArgument("max_source_future_ms", default_value="10"),
             DeclareLaunchArgument("client_receive_timeout_ms", default_value="500"),
+            DeclareLaunchArgument(
+                "recording_status_topic", default_value="/quest/recording_status"
+            ),
             Node(
                 package="quest_teleop",
                 executable="quest_usb_bridge",
@@ -37,6 +40,9 @@ def generate_launch_description():
                         ),
                         "client_receive_timeout_ms": LaunchConfiguration(
                             "client_receive_timeout_ms"
+                        ),
+                        "recording_status_topic": LaunchConfiguration(
+                            "recording_status_topic"
                         ),
                     }
                 ],

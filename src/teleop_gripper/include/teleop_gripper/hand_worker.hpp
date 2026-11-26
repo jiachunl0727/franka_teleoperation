@@ -47,6 +47,7 @@ class HandWorker {
   ~HandWorker();
   void issue(const HandRequest& request, double initial_width);
   std::optional<HandResult> collect();
+  std::optional<HandFeedback> read_live_width();
 
  private:
   struct StopResult {

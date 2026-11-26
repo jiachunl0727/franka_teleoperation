@@ -1,0 +1,27 @@
+-- run_test.py: invoking following command in '/ws/build-startup-observer/teleop_controllers':
+ - /ws/build-startup-observer/teleop_controllers/test_inter_arm_policy --gtest_output=xml:/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_inter_arm_policy.gtest.xml
+
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 5 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 5 tests from InterArmPolicy
+[ RUN      ] InterArmPolicy.SeedsKeepRealTimestampAndRejectMovingStartup
+[       OK ] InterArmPolicy.SeedsKeepRealTimestampAndRejectMovingStartup (0 ms)
+[ RUN      ] InterArmPolicy.HeldLawIsNotReplacedByAvoidanceYield
+[       OK ] InterArmPolicy.HeldLawIsNotReplacedByAvoidanceYield (0 ms)
+[ RUN      ] InterArmPolicy.MovingReferenceAvoidsFreshHeldPeerAndRetainsRetreat
+[       OK ] InterArmPolicy.MovingReferenceAvoidsFreshHeldPeerAndRetainsRetreat (0 ms)
+[ RUN      ] InterArmPolicy.FreshAcquisitionAfterBarrierRemovesOnlyBarrierAge
+[       OK ] InterArmPolicy.FreshAcquisitionAfterBarrierRemovesOnlyBarrierAge (0 ms)
+[ RUN      ] InterArmPolicy.RefreshDoesNotHideMovingFeedbackOrReadFailure
+[       OK ] InterArmPolicy.RefreshDoesNotHideMovingFeedbackOrReadFailure (0 ms)
+[----------] 5 tests from InterArmPolicy (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 5 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 5 tests.
+
+
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_inter_arm_policy.gtest.xml'
+-- run_test.py: verify result file '/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_inter_arm_policy.gtest.xml'

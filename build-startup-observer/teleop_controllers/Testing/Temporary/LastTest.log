@@ -1,0 +1,234 @@
+Start testing: Nov 12 15:58 UTC
+----------------------------------------------------------
+1/16 Testing: test_hardware_startup
+1/16 Test: test_hardware_startup
+Command: "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_hardware_startup.gtest.xml" "--package-name" "teleop_controllers" "--output-file" "/ws/build-startup-observer/teleop_controllers/ament_cmake_gtest/test_hardware_startup.txt" "--command" "/ws/build-startup-observer/teleop_controllers/test_hardware_startup" "--gtest_output=xml:/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_hardware_startup.gtest.xml"
+Directory: /ws/build-startup-observer/teleop_controllers
+"test_hardware_startup" start time: Nov 12 15:58 UTC
+Output:
+----------------------------------------------------------
+-- run_test.py: invoking following command in '/ws/build-startup-observer/teleop_controllers':
+ - /ws/build-startup-observer/teleop_controllers/test_hardware_startup --gtest_output=xml:/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_hardware_startup.gtest.xml
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 6 tests from 2 test suites.
+[----------] Global test environment set-up.
+[----------] 5 tests from HardwareStartup
+[ RUN      ] HardwareStartup.IdleWithoutErrorsCanRequestControl
+[       OK ] HardwareStartup.IdleWithoutErrorsCanRequestControl (0 ms)
+[ RUN      ] HardwareStartup.ActiveAndFaultedModesNeverRequestCompetingControl
+[       OK ] HardwareStartup.ActiveAndFaultedModesNeverRequestCompetingControl (0 ms)
+[ RUN      ] HardwareStartup.HistoricalErrorsDoNotBlockHealthyIdleStartup
+[       OK ] HardwareStartup.HistoricalErrorsDoNotBlockHealthyIdleStartup (0 ms)
+[ RUN      ] HardwareStartup.ObservedTransitionAllowsIdleAndMoveOnly
+[       OK ] HardwareStartup.ObservedTransitionAllowsIdleAndMoveOnly (0 ms)
+[ RUN      ] HardwareStartup.ObservedTransitionRejectsCurrentErrorsInEitherMode
+[       OK ] HardwareStartup.ObservedTransitionRejectsCurrentErrorsInEitherMode (0 ms)
+[----------] 5 tests from HardwareStartup (0 ms total)
+
+[----------] 1 test from ModelFeedback
+[ RUN      ] ModelFeedback.UsesUrdfDynamicsAndSharesOneCoherentModelWithoutRobotAccess
+[       OK ] ModelFeedback.UsesUrdfDynamicsAndSharesOneCoherentModelWithoutRobotAccess (0 ms)
+[----------] 1 test from ModelFeedback (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 6 tests from 2 test suites ran. (0 ms total)
+[  PASSED  ] 6 tests.
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_hardware_startup.gtest.xml'
+-- run_test.py: verify result file '/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_hardware_startup.gtest.xml'
+<end of output>
+Test time =   0.05 sec
+----------------------------------------------------------
+Test Passed.
+"test_hardware_startup" end time: Nov 12 15:58 UTC
+"test_hardware_startup" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/16 Testing: test_inter_arm_policy
+2/16 Test: test_inter_arm_policy
+Command: "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_inter_arm_policy.gtest.xml" "--package-name" "teleop_controllers" "--output-file" "/ws/build-startup-observer/teleop_controllers/ament_cmake_gtest/test_inter_arm_policy.txt" "--command" "/ws/build-startup-observer/teleop_controllers/test_inter_arm_policy" "--gtest_output=xml:/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_inter_arm_policy.gtest.xml"
+Directory: /ws/build-startup-observer/teleop_controllers
+"test_inter_arm_policy" start time: Nov 12 15:58 UTC
+Output:
+----------------------------------------------------------
+-- run_test.py: invoking following command in '/ws/build-startup-observer/teleop_controllers':
+ - /ws/build-startup-observer/teleop_controllers/test_inter_arm_policy --gtest_output=xml:/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_inter_arm_policy.gtest.xml
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 5 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 5 tests from InterArmPolicy
+[ RUN      ] InterArmPolicy.SeedsKeepRealTimestampAndRejectMovingStartup
+[       OK ] InterArmPolicy.SeedsKeepRealTimestampAndRejectMovingStartup (0 ms)
+[ RUN      ] InterArmPolicy.HeldLawIsNotReplacedByAvoidanceYield
+[       OK ] InterArmPolicy.HeldLawIsNotReplacedByAvoidanceYield (0 ms)
+[ RUN      ] InterArmPolicy.MovingReferenceAvoidsFreshHeldPeerAndRetainsRetreat
+[       OK ] InterArmPolicy.MovingReferenceAvoidsFreshHeldPeerAndRetainsRetreat (0 ms)
+[ RUN      ] InterArmPolicy.FreshAcquisitionAfterBarrierRemovesOnlyBarrierAge
+[       OK ] InterArmPolicy.FreshAcquisitionAfterBarrierRemovesOnlyBarrierAge (0 ms)
+[ RUN      ] InterArmPolicy.RefreshDoesNotHideMovingFeedbackOrReadFailure
+[       OK ] InterArmPolicy.RefreshDoesNotHideMovingFeedbackOrReadFailure (0 ms)
+[----------] 5 tests from InterArmPolicy (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 5 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 5 tests.
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_inter_arm_policy.gtest.xml'
+-- run_test.py: verify result file '/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_inter_arm_policy.gtest.xml'
+<end of output>
+Test time =   0.05 sec
+----------------------------------------------------------
+Test Passed.
+"test_inter_arm_policy" end time: Nov 12 15:58 UTC
+"test_inter_arm_policy" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/16 Testing: test_inter_arm_startup_transport
+3/16 Test: test_inter_arm_startup_transport
+Command: "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_inter_arm_startup_transport.gtest.xml" "--package-name" "teleop_controllers" "--output-file" "/ws/build-startup-observer/teleop_controllers/ament_cmake_gtest/test_inter_arm_startup_transport.txt" "--command" "/ws/build-startup-observer/teleop_controllers/test_inter_arm_startup_transport" "--gtest_output=xml:/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_inter_arm_startup_transport.gtest.xml"
+Directory: /ws/build-startup-observer/teleop_controllers
+"test_inter_arm_startup_transport" start time: Nov 12 15:58 UTC
+Output:
+----------------------------------------------------------
+-- run_test.py: invoking following command in '/ws/build-startup-observer/teleop_controllers':
+ - /ws/build-startup-observer/teleop_controllers/test_inter_arm_startup_transport --gtest_output=xml:/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_inter_arm_startup_transport.gtest.xml
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 4 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 4 tests from InterArmStartupTransport
+[ RUN      ] InterArmStartupTransport.PublishesNewStatesDuringDelayedMoveAcknowledgement
+[       OK ] InterArmStartupTransport.PublishesNewStatesDuringDelayedMoveAcknowledgement (9 ms)
+[ RUN      ] InterArmStartupTransport.PublicObserverKeepsExclusiveOwnerAndFinishesNormally
+[       OK ] InterArmStartupTransport.PublicObserverKeepsExclusiveOwnerAndFinishesNormally (3 ms)
+[ RUN      ] InterArmStartupTransport.ObserverFailureCancelsBeforeAnyTorqueAndUnlocksRead
+[       OK ] InterArmStartupTransport.ObserverFailureCancelsBeforeAnyTorqueAndUnlocksRead (41 ms)
+[ RUN      ] InterArmStartupTransport.RejectedMoveAcknowledgementNeverStartsTorqueLoop
+[       OK ] InterArmStartupTransport.RejectedMoveAcknowledgementNeverStartsTorqueLoop (0 ms)
+[----------] 4 tests from InterArmStartupTransport (53 ms total)
+
+[----------] Global test environment tear-down
+[==========] 4 tests from 1 test suite ran. (53 ms total)
+[  PASSED  ] 4 tests.
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_inter_arm_startup_transport.gtest.xml'
+-- run_test.py: verify result file '/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_inter_arm_startup_transport.gtest.xml'
+<end of output>
+Test time =   0.11 sec
+----------------------------------------------------------
+Test Passed.
+"test_inter_arm_startup_transport" end time: Nov 12 15:58 UTC
+"test_inter_arm_startup_transport" time elapsed: 00:00:00
+----------------------------------------------------------
+
+8/16 Testing: test_controller_manager
+8/16 Test: test_controller_manager
+Command: "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_controller_manager.gtest.xml" "--package-name" "teleop_controllers" "--output-file" "/ws/build-startup-observer/teleop_controllers/ament_cmake_gtest/test_controller_manager.txt" "--command" "/ws/build-startup-observer/teleop_controllers/test_controller_manager" "--gtest_output=xml:/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_controller_manager.gtest.xml"
+Directory: /ws/build-startup-observer/teleop_controllers
+"test_controller_manager" start time: Nov 12 15:58 UTC
+Output:
+----------------------------------------------------------
+-- run_test.py: invoking following command in '/ws/build-startup-observer/teleop_controllers':
+ - /ws/build-startup-observer/teleop_controllers/test_controller_manager --gtest_output=xml:/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_controller_manager.gtest.xml
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 35 tests from 4 test suites.
+[----------] Global test environment set-up.
+[----------] 30 tests from Manager
+[ RUN      ] Manager.OrientationModeCapturesPositionAndSwitchesWithoutTriggerRelease
+[       OK ] Manager.OrientationModeCapturesPositionAndSwitchesWithoutTriggerRelease (0 ms)
+[ RUN      ] Manager.ReleaseIsRequiredAndNominalLawIsPreserved
+[       OK ] Manager.ReleaseIsRequiredAndNominalLawIsPreserved (0 ms)
+[ RUN      ] Manager.SmallPoseWithImplausibleVelocityCannotDriveTheArm
+[       OK ] Manager.SmallPoseWithImplausibleVelocityCannotDriveTheArm (0 ms)
+[ RUN      ] Manager.StaleTargetIsRemovedAndPacketsCannotResume
+[       OK ] Manager.StaleTargetIsRemovedAndPacketsCannotResume (0 ms)
+[ RUN      ] Manager.FaultDisarmIsNeverARelease
+[       OK ] Manager.FaultDisarmIsNeverARelease (0 ms)
+[ RUN      ] Manager.SessionReferenceOrderingAndClockFaultsRequireRelease
+[       OK ] Manager.SessionReferenceOrderingAndClockFaultsRequireRelease (0 ms)
+[ RUN      ] Manager.ReleaseRepeatsDoNotRefreshSourceAge
+[       OK ] Manager.ReleaseRepeatsDoNotRefreshSourceAge (0 ms)
+[ RUN      ] Manager.OuterEnvelopeAndNonFiniteTargetsDisarm
+[       OK ] Manager.OuterEnvelopeAndNonFiniteTargetsDisarm (0 ms)
+[ RUN      ] Manager.CoriolisConventionIsPreservedButInvalidActuatorIntersectionIsFatal
+[       OK ] Manager.CoriolisConventionIsPreservedButInvalidActuatorIntersectionIsFatal (0 ms)
+[ RUN      ] Manager.QuaternionSignDoesNotChangeTorque
+[       OK ] Manager.QuaternionSignDoesNotChangeTorque (0 ms)
+[ RUN      ] Manager.ParametersRejectUnapprovedCeilingChangesAndNaNs
+[       OK ] Manager.ParametersRejectUnapprovedCeilingChangesAndNaNs (0 ms)
+[ RUN      ] Manager.OverflowSizedFiniteVelocityIsRejectedBeforeComputingNominal
+[       OK ] Manager.OverflowSizedFiniteVelocityIsRejectedBeforeComputingNominal (0 ms)
+[ RUN      ] Manager.ReportsSpecificFatalCauseWithoutRelaxingChecks
+[       OK ] Manager.ReportsSpecificFatalCauseWithoutRelaxingChecks (0 ms)
+[ RUN      ] Manager.InjectedLawRunsOnlyWhenArmedAndResetsOnActivation
+[       OK ] Manager.InjectedLawRunsOnlyWhenArmedAndResetsOnActivation (0 ms)
+[ RUN      ] Manager.HomingOwnsNominalUntilControlledStopAndRequiresFreshReengagement
+[       OK ] Manager.HomingOwnsNominalUntilControlledStopAndRequiresFreshReengagement (1 ms)
+[ RUN      ] Manager.InvalidLawResultAndZeroPeriodTerminateBeforeSafetyHandoff
+[       OK ] Manager.InvalidLawResultAndZeroPeriodTerminateBeforeSafetyHandoff (0 ms)
+[ RUN      ] Manager.ReleaseCapturesMeasuredJointsOnceAndHoldsTheUnobservedSeventhJoint
+[       OK ] Manager.ReleaseCapturesMeasuredJointsOnceAndHoldsTheUnobservedSeventhJoint (0 ms)
+[ RUN      ] Manager.InputFaultsPreserveTheHoldAndFreshReleaseCannotRecaptureIt
+[       OK ] Manager.InputFaultsPreserveTheHoldAndFreshReleaseCannotRecaptureIt (0 ms)
+[ RUN      ] Manager.HoldingRecapturesAfterTeleoperationAndReturnsItsOwnership
+[       OK ] Manager.HoldingRecapturesAfterTeleoperationAndReturnsItsOwnership (0 ms)
+[ RUN      ] Manager.StartupHoldSurvivesMissingInvalidAndStaleQuestInputWithoutFollowingDrift
+[       OK ] Manager.StartupHoldSurvivesMissingInvalidAndStaleQuestInputWithoutFollowingDrift (0 ms)
+[ RUN      ] Manager.StartupSessionAndQueueFaultsCannotMoveTheLocalHoldAnchor
+[       OK ] Manager.StartupSessionAndQueueFaultsCannotMoveTheLocalHoldAnchor (0 ms)
+[ RUN      ] Manager.PausedHoldSurvivesTrackingFaultAndStalenessWithoutRecapture
+[       OK ] Manager.PausedHoldSurvivesTrackingFaultAndStalenessWithoutRecapture (0 ms)
+[ RUN      ] Manager.ReferenceSpeedAccelerationAndTwistStayCoherentAcrossReversals
+[       OK ] Manager.ReferenceSpeedAccelerationAndTwistStayCoherentAcrossReversals (1 ms)
+[ RUN      ] Manager.ImmobilePlantCannotWindUpAReferenceWithoutLimit
+[       OK ] Manager.ImmobilePlantCannotWindUpAReferenceWithoutLimit (0 ms)
+[ RUN      ] Manager.OptionalLimitsDefaultOffAndMappedReferencePassesThrough
+[       OK ] Manager.OptionalLimitsDefaultOffAndMappedReferencePassesThrough (0 ms)
+[ RUN      ] Manager.TrackingProtectionCanBeEnabledWithoutReferenceShaping
+[       OK ] Manager.TrackingProtectionCanBeEnabledWithoutReferenceShaping (0 ms)
+[ RUN      ] Manager.OptionalReferenceProjectionKeepsBoundarySlidingAndRetreatConnected
+[       OK ] Manager.OptionalReferenceProjectionKeepsBoundarySlidingAndRetreatConnected (0 ms)
+[ RUN      ] Manager.BlockedInputDoesNotAccumulateAndSmallRetreatWorksWithEitherShapingMode
+[       OK ] Manager.BlockedInputDoesNotAccumulateAndSmallRetreatWorksWithEitherShapingMode (1 ms)
+[ RUN      ] Manager.RotationalBoundaryHoldsAcceptedOrientationAndAllowsSmallReversal
+[       OK ] Manager.RotationalBoundaryHoldsAcceptedOrientationAndAllowsSmallReversal (0 ms)
+[ RUN      ] Manager.FreshSafetyHoldKeepsPoseWithoutDisarmingOrResettingTheLaw
+[       OK ] Manager.FreshSafetyHoldKeepsPoseWithoutDisarmingOrResettingTheLaw (0 ms)
+[----------] 30 tests from Manager (3 ms total)
+
+[----------] 2 tests from Handoff
+[ RUN      ] Handoff.QueueIsBoundedAndPreservesOrder
+[       OK ] Handoff.QueueIsBoundedAndPreservesOrder (0 ms)
+[ RUN      ] Handoff.ConcurrentSamplesRemainAtomic
+[       OK ] Handoff.ConcurrentSamplesRemainAtomic (3 ms)
+[----------] 2 tests from Handoff (3 ms total)
+
+[----------] 1 test from TorqueController
+[ RUN      ] TorqueController.IncompatibleReferenceIsAnExplicitFault
+[       OK ] TorqueController.IncompatibleReferenceIsAnExplicitFault (0 ms)
+[----------] 1 test from TorqueController (0 ms total)
+
+[----------] 2 tests from PositionHold
+[ RUN      ] PositionHold.StiffnessRampsAndJointDampingAndCoriolisArePreserved
+[       OK ] PositionHold.StiffnessRampsAndJointDampingAndCoriolisArePreserved (1 ms)
+[ RUN      ] PositionHold.InvalidParametersAndReferencesAreRejected
+[       OK ] PositionHold.InvalidParametersAndReferencesAreRejected (0 ms)
+[----------] 2 tests from PositionHold (1 ms total)
+
+[----------] Global test environment tear-down
+[==========] 35 tests from 4 test suites ran. (7 ms total)
+[  PASSED  ] 35 tests.
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_controller_manager.gtest.xml'
+-- run_test.py: verify result file '/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_controller_manager.gtest.xml'
+<end of output>
+Test time =   0.06 sec
+----------------------------------------------------------
+Test Passed.
+"test_controller_manager" end time: Nov 12 15:58 UTC
+"test_controller_manager" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Nov 12 15:58 UTC
+
+gtest =   0.27 sec*proc
+

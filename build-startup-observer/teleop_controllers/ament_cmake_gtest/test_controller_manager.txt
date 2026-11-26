@@ -1,0 +1,96 @@
+-- run_test.py: invoking following command in '/ws/build-startup-observer/teleop_controllers':
+ - /ws/build-startup-observer/teleop_controllers/test_controller_manager --gtest_output=xml:/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_controller_manager.gtest.xml
+
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 35 tests from 4 test suites.
+[----------] Global test environment set-up.
+[----------] 30 tests from Manager
+[ RUN      ] Manager.OrientationModeCapturesPositionAndSwitchesWithoutTriggerRelease
+[       OK ] Manager.OrientationModeCapturesPositionAndSwitchesWithoutTriggerRelease (0 ms)
+[ RUN      ] Manager.ReleaseIsRequiredAndNominalLawIsPreserved
+[       OK ] Manager.ReleaseIsRequiredAndNominalLawIsPreserved (0 ms)
+[ RUN      ] Manager.SmallPoseWithImplausibleVelocityCannotDriveTheArm
+[       OK ] Manager.SmallPoseWithImplausibleVelocityCannotDriveTheArm (0 ms)
+[ RUN      ] Manager.StaleTargetIsRemovedAndPacketsCannotResume
+[       OK ] Manager.StaleTargetIsRemovedAndPacketsCannotResume (0 ms)
+[ RUN      ] Manager.FaultDisarmIsNeverARelease
+[       OK ] Manager.FaultDisarmIsNeverARelease (0 ms)
+[ RUN      ] Manager.SessionReferenceOrderingAndClockFaultsRequireRelease
+[       OK ] Manager.SessionReferenceOrderingAndClockFaultsRequireRelease (0 ms)
+[ RUN      ] Manager.ReleaseRepeatsDoNotRefreshSourceAge
+[       OK ] Manager.ReleaseRepeatsDoNotRefreshSourceAge (0 ms)
+[ RUN      ] Manager.OuterEnvelopeAndNonFiniteTargetsDisarm
+[       OK ] Manager.OuterEnvelopeAndNonFiniteTargetsDisarm (0 ms)
+[ RUN      ] Manager.CoriolisConventionIsPreservedButInvalidActuatorIntersectionIsFatal
+[       OK ] Manager.CoriolisConventionIsPreservedButInvalidActuatorIntersectionIsFatal (0 ms)
+[ RUN      ] Manager.QuaternionSignDoesNotChangeTorque
+[       OK ] Manager.QuaternionSignDoesNotChangeTorque (0 ms)
+[ RUN      ] Manager.ParametersRejectUnapprovedCeilingChangesAndNaNs
+[       OK ] Manager.ParametersRejectUnapprovedCeilingChangesAndNaNs (0 ms)
+[ RUN      ] Manager.OverflowSizedFiniteVelocityIsRejectedBeforeComputingNominal
+[       OK ] Manager.OverflowSizedFiniteVelocityIsRejectedBeforeComputingNominal (0 ms)
+[ RUN      ] Manager.ReportsSpecificFatalCauseWithoutRelaxingChecks
+[       OK ] Manager.ReportsSpecificFatalCauseWithoutRelaxingChecks (0 ms)
+[ RUN      ] Manager.InjectedLawRunsOnlyWhenArmedAndResetsOnActivation
+[       OK ] Manager.InjectedLawRunsOnlyWhenArmedAndResetsOnActivation (0 ms)
+[ RUN      ] Manager.HomingOwnsNominalUntilControlledStopAndRequiresFreshReengagement
+[       OK ] Manager.HomingOwnsNominalUntilControlledStopAndRequiresFreshReengagement (1 ms)
+[ RUN      ] Manager.InvalidLawResultAndZeroPeriodTerminateBeforeSafetyHandoff
+[       OK ] Manager.InvalidLawResultAndZeroPeriodTerminateBeforeSafetyHandoff (0 ms)
+[ RUN      ] Manager.ReleaseCapturesMeasuredJointsOnceAndHoldsTheUnobservedSeventhJoint
+[       OK ] Manager.ReleaseCapturesMeasuredJointsOnceAndHoldsTheUnobservedSeventhJoint (0 ms)
+[ RUN      ] Manager.InputFaultsPreserveTheHoldAndFreshReleaseCannotRecaptureIt
+[       OK ] Manager.InputFaultsPreserveTheHoldAndFreshReleaseCannotRecaptureIt (0 ms)
+[ RUN      ] Manager.HoldingRecapturesAfterTeleoperationAndReturnsItsOwnership
+[       OK ] Manager.HoldingRecapturesAfterTeleoperationAndReturnsItsOwnership (0 ms)
+[ RUN      ] Manager.StartupHoldSurvivesMissingInvalidAndStaleQuestInputWithoutFollowingDrift
+[       OK ] Manager.StartupHoldSurvivesMissingInvalidAndStaleQuestInputWithoutFollowingDrift (0 ms)
+[ RUN      ] Manager.StartupSessionAndQueueFaultsCannotMoveTheLocalHoldAnchor
+[       OK ] Manager.StartupSessionAndQueueFaultsCannotMoveTheLocalHoldAnchor (0 ms)
+[ RUN      ] Manager.PausedHoldSurvivesTrackingFaultAndStalenessWithoutRecapture
+[       OK ] Manager.PausedHoldSurvivesTrackingFaultAndStalenessWithoutRecapture (0 ms)
+[ RUN      ] Manager.ReferenceSpeedAccelerationAndTwistStayCoherentAcrossReversals
+[       OK ] Manager.ReferenceSpeedAccelerationAndTwistStayCoherentAcrossReversals (1 ms)
+[ RUN      ] Manager.ImmobilePlantCannotWindUpAReferenceWithoutLimit
+[       OK ] Manager.ImmobilePlantCannotWindUpAReferenceWithoutLimit (0 ms)
+[ RUN      ] Manager.OptionalLimitsDefaultOffAndMappedReferencePassesThrough
+[       OK ] Manager.OptionalLimitsDefaultOffAndMappedReferencePassesThrough (0 ms)
+[ RUN      ] Manager.TrackingProtectionCanBeEnabledWithoutReferenceShaping
+[       OK ] Manager.TrackingProtectionCanBeEnabledWithoutReferenceShaping (0 ms)
+[ RUN      ] Manager.OptionalReferenceProjectionKeepsBoundarySlidingAndRetreatConnected
+[       OK ] Manager.OptionalReferenceProjectionKeepsBoundarySlidingAndRetreatConnected (0 ms)
+[ RUN      ] Manager.BlockedInputDoesNotAccumulateAndSmallRetreatWorksWithEitherShapingMode
+[       OK ] Manager.BlockedInputDoesNotAccumulateAndSmallRetreatWorksWithEitherShapingMode (1 ms)
+[ RUN      ] Manager.RotationalBoundaryHoldsAcceptedOrientationAndAllowsSmallReversal
+[       OK ] Manager.RotationalBoundaryHoldsAcceptedOrientationAndAllowsSmallReversal (0 ms)
+[ RUN      ] Manager.FreshSafetyHoldKeepsPoseWithoutDisarmingOrResettingTheLaw
+[       OK ] Manager.FreshSafetyHoldKeepsPoseWithoutDisarmingOrResettingTheLaw (0 ms)
+[----------] 30 tests from Manager (3 ms total)
+
+[----------] 2 tests from Handoff
+[ RUN      ] Handoff.QueueIsBoundedAndPreservesOrder
+[       OK ] Handoff.QueueIsBoundedAndPreservesOrder (0 ms)
+[ RUN      ] Handoff.ConcurrentSamplesRemainAtomic
+[       OK ] Handoff.ConcurrentSamplesRemainAtomic (3 ms)
+[----------] 2 tests from Handoff (3 ms total)
+
+[----------] 1 test from TorqueController
+[ RUN      ] TorqueController.IncompatibleReferenceIsAnExplicitFault
+[       OK ] TorqueController.IncompatibleReferenceIsAnExplicitFault (0 ms)
+[----------] 1 test from TorqueController (0 ms total)
+
+[----------] 2 tests from PositionHold
+[ RUN      ] PositionHold.StiffnessRampsAndJointDampingAndCoriolisArePreserved
+[       OK ] PositionHold.StiffnessRampsAndJointDampingAndCoriolisArePreserved (1 ms)
+[ RUN      ] PositionHold.InvalidParametersAndReferencesAreRejected
+[       OK ] PositionHold.InvalidParametersAndReferencesAreRejected (0 ms)
+[----------] 2 tests from PositionHold (1 ms total)
+
+[----------] Global test environment tear-down
+[==========] 35 tests from 4 test suites ran. (7 ms total)
+[  PASSED  ] 35 tests.
+
+
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_controller_manager.gtest.xml'
+-- run_test.py: verify result file '/ws/build-startup-observer/teleop_controllers/test_results/teleop_controllers/test_controller_manager.gtest.xml'

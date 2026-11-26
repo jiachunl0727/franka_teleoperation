@@ -22,12 +22,14 @@ class FrankaHand final : public HandDevice {
   }
   bool stop() override { return hand_.stop(); }
   HandFeedback read() override {
+    std::lock_guard<std::mutex> lock(read_mutex_);
     const auto s = hand_.readOnce();
     return {s.width, s.max_width, s.is_grasped};
   }
 
  private:
   franka::Gripper hand_;
+  std::mutex read_mutex_;
 };
 }  // namespace
 HandWorker::HandWorker(bool hardware, std::string ip, double duration, double object_width)
@@ -142,6 +144,19 @@ void HandWorker::stop() {
     result.error = "Hand stop retry window elapsed before command completion";
     return result;
   });
+}
+std::optional<HandFeedback> HandWorker::read_live_width() {
+  std::shared_ptr<HandDevice> hand;
+  {
+    std::lock_guard<std::mutex> lock(connection_mutex_);
+    hand = hand_;
+  }
+  if (!hardware_ || !hand)
+    return std::nullopt;
+  const auto feedback = hand->read();
+  return valid_hand_feedback(feedback.width, feedback.maximum_width)
+             ? std::optional<HandFeedback>(feedback)
+             : std::nullopt;
 }
 void HandWorker::issue(const HandRequest& request, double initial_width) {
   if (request.operation == HandOperation::none)

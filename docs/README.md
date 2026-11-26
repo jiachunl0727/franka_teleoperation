@@ -10,6 +10,8 @@ Docker commands run on the host PC. The host repository is mounted at `/ws`.
 | Understand trigger release, homing, Hand behavior or startup errors | [Runtime guide](TELEOPERATION_RUNTIME.md) |
 | Check mapping without a robot; calibrate the coordinate basis | [Robot-free mapping](ROBOT_FREE_MAPPING.md) |
 | Plot live data, record an experiment or create MATLAB reports | [Trajectory monitoring](TRAJECTORY_MONITORING.md) |
+| Review the new CBF library, all solver benchmarks and hardware release blockers | [CBF verification](cbf/VERIFICATION.md) |
+| Check installed UMI fingers and replay table/singularity avoidance from bags | [Finger model and offline avoidance](cbf/UMI_FINGERS_AND_OFFLINE_AVOIDANCE.md) |
 | Change torque caps or understand controller ownership | [Controller ownership and torque clipping](CONTROLLER_ARCHITECTURE.md) |
 | Format code, build and run tests | [Development guide](DEVELOPMENT.md) |
 | Understand USB messages and timestamps | [Quest USB protocol](quest-usb-protocol.md) |
@@ -18,8 +20,8 @@ Docker commands run on the host PC. The host repository is mounted at `/ws`.
 | Review the current architecture and deferred CBF work | [Current architecture](CONTROLLER_ARCHITECTURE.md) |
 
 The combined-launch configuration files are
-[`single_panda.yaml`](../src/teleop_bringup/config/single_panda.yaml) and
-[`dual_panda.yaml`](../src/teleop_bringup/config/dual_panda.yaml). Inspect the
+[`single_panda.yaml`](../src/teleop_bringup/config/single_panda/single_panda.yaml) and
+[`dual_panda.yaml`](../src/teleop_bringup/config/dual_panda/dual_panda.yaml). Inspect the
 selected file before running it: these are editable installation settings, and
 the single-arm file may already select hardware. Package-local YAML files apply
 to standalone launches.

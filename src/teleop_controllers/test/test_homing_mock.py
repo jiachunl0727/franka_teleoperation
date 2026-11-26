@@ -72,7 +72,7 @@ class HomingMockTest(unittest.TestCase):
                             "ros2",
                             "run",
                             "teleop_controllers",
-                            "cartesian_impedance_controller",
+                            "cartesian_pd_controller",
                             "--ros-args",
                             "-r",
                             "__ns:=" + namespace,

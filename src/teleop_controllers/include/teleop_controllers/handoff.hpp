@@ -23,6 +23,15 @@ class SpscQueue {
     write_.store(next, std::memory_order_release);
     return true;
   }
+  template <class Fill>
+  bool emplace(Fill&& fill) noexcept {
+    const auto write = write_.load(std::memory_order_relaxed), next = (write + 1) % Capacity;
+    if (next == read_.load(std::memory_order_acquire))
+      return false;
+    fill(storage_[write]);
+    write_.store(next, std::memory_order_release);
+    return true;
+  }
   bool pop(T& value) noexcept {
     const auto read = read_.load(std::memory_order_relaxed);
     if (read == write_.load(std::memory_order_acquire))

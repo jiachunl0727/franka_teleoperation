@@ -48,6 +48,11 @@ horizontal directions control Hand opening/closing at fixed speed; neutral
 cancels unfinished motion and preserves a confirmed force grasp. Attribution and upstream licenses are retained in
 `THIRD_PARTY_LICENSES`.
 
+When connected to the ROS bridge, the app speaks “recording starts” and
+“recording ends” when it receives recording-state transitions. Speech uses the
+headset's Android text-to-speech service. If recording is already active when
+the app connects, it announces that active state once.
+
 Robot-free adapter regression test, from the repository root:
 
 ```bash

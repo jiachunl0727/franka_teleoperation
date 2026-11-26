@@ -10,20 +10,20 @@ from teleop_bringup.configuration import (
     load_arms,
     select_arms,
     launch_bool,
-    read_mapping,
 )
 from teleop_bringup.runtime_configuration import (
     unified_settings,
+    load_runtime_document,
     bridge_controller_topic,
 )
 import json
-from launch.actions import ExecuteProcess, LogInfo
+from launch.actions import LogInfo
 from teleop_bringup.recording_configuration import recording_plan
 
 
 def setup(context):
     value = lambda key: LaunchConfiguration(key).perform(context)
-    source = read_mapping(value("recording_config"))
+    source = load_runtime_document(value("recording_config"))
     debounce = (
         unified_settings(source)[2]["menu_debounce_seconds"]
         if "pipeline" in source
@@ -43,10 +43,24 @@ def setup(context):
         value("recording_output_root"),
     )
     if value("recording_mode") == "continuous":
-        Path(plan.output).parent.mkdir(parents=True, exist_ok=True)
         return [
             LogInfo(msg=f"Recording selected topics to {plan.output}"),
-            ExecuteProcess(cmd=plan.command, output="screen"),
+            Node(
+                package="recording",
+                executable="menu_recorder",
+                name="continuous_recorder",
+                namespace=value("recording_namespace"),
+                output="screen",
+                parameters=[
+                    dict(
+                        recording_mode="continuous",
+                        topics_json=json.dumps(plan.topics),
+                        output_root=str(Path(plan.output).parent),
+                        output_directory=plan.output,
+                        storage_id=plan.command[4],
+                    )
+                ],
+            ),
         ]
     if value("recording_mode") != "menu":
         raise ValueError("recording_mode must be menu/continuous")
@@ -69,6 +83,7 @@ def setup(context):
             output="screen",
             parameters=[
                 dict(
+                    recording_mode="menu",
                     controller_state_topic=left,
                     topics_json=json.dumps(plan.topics),
                     inactive_namespaces_json=json.dumps(inactive),
@@ -87,10 +102,10 @@ def generate_launch_description():
         single_controller="right",
         recording_mode="menu",
         arms_config=str(
-            Path(get_package_share_directory("teleop_bringup")) / "config/arms.yaml"
+            Path(get_package_share_directory("teleop_bringup")) / "config/single_panda/arms.yaml"
         ),
         recording_config=str(
-            Path(get_package_share_directory("recording")) / "config/recording.yaml"
+            Path(get_package_share_directory("recording")) / "config/standalone.yaml"
         ),
         recording_topics="",
         recording_output_root="",

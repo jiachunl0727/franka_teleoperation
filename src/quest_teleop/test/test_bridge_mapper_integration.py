@@ -321,7 +321,7 @@ class BridgeMapperIntegrationTest(unittest.TestCase):
         self.assertEqual(list(self.right_states[-1].buttons), [])
         self.assertEqual(list(self.left_states[-1].buttons), [])
 
-    def test_joystick_click_is_forwarded_for_each_hand_and_requires_a_complete_pair(
+    def test_legacy_thumbstick_click_is_ignored_and_requires_a_complete_pair(
         self,
     ):
         self.connect()
@@ -333,9 +333,8 @@ class BridgeMapperIntegrationTest(unittest.TestCase):
             self.wait_for(
                 lambda: any(s.sequence == int(packet["sequence"]) for s in states)
             )
-            buttons = [(b.name, b.pressed, b.active) for b in states[-1].buttons]
-            self.assertIn(("thumbstick", True, True), buttons)
-            self.assertEqual(len(buttons), 3 if controller == "right" else 4)
+            expected = ["a", "b"] if controller == "right" else ["x", "y", "menu"]
+            self.assertEqual([button.name for button in states[-1].buttons], expected)
         malformed = self.packet(0.0)
         malformed["inputs"]["thumbstick_click"] = False
         before = len(self.right_states)

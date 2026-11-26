@@ -1,11 +1,13 @@
 #include <android_native_app_glue.h>
 #include "openxr_program.h"
+#include "recording_voice.h"
 #include "telemetry.h"
 
 extern "C" void android_main(android_app* app) {
   OpenXrProgram program;
   if (!program.Create(app)) { LOGE("OpenXR initialization failed"); return; }
-  quest_usb::QuestTelemetry telemetry;
+  quest_usb::QuestTelemetry telemetry(
+      [app](const std::string& event) { announce_recording_event(app, event); });
   quest_usb::LocalDeadman deadman;
   while (!app->destroyRequested) {
     int events = 0;

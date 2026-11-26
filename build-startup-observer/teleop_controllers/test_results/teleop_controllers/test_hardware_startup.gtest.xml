@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="6" failures="0" disabled="0" errors="0" time="0" timestamp="2026-11-12T15:58:33" name="AllTests">
+  <testsuite name="HardwareStartup" tests="5" failures="0" disabled="0" errors="0" time="0" timestamp="2026-11-12T15:58:33">
+    <testcase name="IdleWithoutErrorsCanRequestControl" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.HardwareStartup" />
+    <testcase name="ActiveAndFaultedModesNeverRequestCompetingControl" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.HardwareStartup" />
+    <testcase name="HistoricalErrorsDoNotBlockHealthyIdleStartup" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.HardwareStartup" />
+    <testcase name="ObservedTransitionAllowsIdleAndMoveOnly" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.HardwareStartup" />
+    <testcase name="ObservedTransitionRejectsCurrentErrorsInEitherMode" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.HardwareStartup" />
+  </testsuite>
+  <testsuite name="ModelFeedback" tests="1" failures="0" disabled="0" errors="0" time="0" timestamp="2026-11-12T15:58:33">
+    <testcase name="UsesUrdfDynamicsAndSharesOneCoherentModelWithoutRobotAccess" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.ModelFeedback" />
+  </testsuite>
+</testsuites>

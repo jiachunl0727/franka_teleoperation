@@ -4,6 +4,7 @@
 
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <time.h>
@@ -19,6 +20,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iomanip>
+#include <functional>
 #include <limits>
 #include <mutex>
 #include <random>
@@ -84,7 +86,8 @@ struct ClockSnapshot {
 
 class UsbTransport {
  public:
-  UsbTransport() : worker_([this] { run(); }) {}
+  explicit UsbTransport(std::function<void(const std::string&)> recording_event = {})
+      : recording_event_(std::move(recording_event)), worker_([this] { run(); }) {}
   ~UsbTransport() { stop(); }
   void stop() {
     if (stopping_.exchange(true)) return;
@@ -207,11 +210,18 @@ class UsbTransport {
     const std::string request = "{\"version\":1,\"type\":\"clock_sync_request\",\"sync_id\":\"" +
         sync_id + "\",\"quest_send_time_ns\":\"" + std::to_string(q1) + "\"}";
     std::string reply;
-    if (!send_frame(fd, request) || !receive_frame(fd, reply)) {
+    if (!send_frame(fd, request)) {
       clock_valid_.store(false);
       disarm_request_.store(true);
       return false;
     }
+    do {
+      if (!receive_frame(fd, reply)) {
+        clock_valid_.store(false);
+        disarm_request_.store(true);
+        return false;
+      }
+    } while (handle_recording_event(reply));
     const uint64_t q4 = monotonic_time_ns();
     try {
       if (json_string(reply, "type") != "clock_sync_reply" || json_string(reply, "sync_id") != sync_id ||
@@ -246,6 +256,64 @@ class UsbTransport {
       clock_valid_.store(false);
       disarm_request_.store(true);
       return false;
+    }
+  }
+
+  bool handle_recording_event(const std::string& payload) {
+    std::string type;
+    try {
+      type = json_string(payload, "type");
+    } catch (const std::exception&) {
+      return false;
+    }
+    if (type != "recording_state")
+      return false;
+    std::string event;
+    try {
+      event = json_string(payload, "event");
+    } catch (const std::exception&) {
+      return true;
+    }
+    if (event != "started" && event != "ended")
+      return true;
+    const bool active = event == "started";
+    bool announce = false;
+    {
+      std::lock_guard<std::mutex> lock(recording_mutex_);
+      announce = (!recording_state_known_ && active) ||
+                 (recording_state_known_ && active != recording_active_);
+      recording_state_known_ = true;
+      recording_active_ = active;
+    }
+    if (announce && recording_event_)
+      recording_event_(event);
+    return true;
+  }
+
+  bool receive_bridge_events(int fd) {
+    while (true) {
+      pollfd ready{fd, POLLIN, 0};
+      const int result = poll(&ready, 1, 0);
+      if (result == 0)
+        return true;
+      if (result < 0) {
+        if (errno == EINTR)
+          continue;
+        return false;
+      }
+      if (ready.revents & (POLLERR | POLLNVAL))
+        return false;
+      if (ready.revents & POLLIN) {
+        std::string payload;
+        if (!receive_frame(fd, payload))
+          return false;
+        handle_recording_event(payload);
+        continue;
+      }
+      if (ready.revents & POLLHUP)
+        return false;
+      if (!(ready.revents & POLLIN))
+        return true;
     }
   }
 
@@ -314,7 +382,18 @@ class UsbTransport {
         pending_.clear();  // Drop samples produced while synchronization was in flight.
         continue;
       }
-      if (!have_sample) continue;
+      if (!have_sample) {
+        if (!receive_bridge_events(socket_fd)) {
+          shutdown(socket_fd, SHUT_RDWR);
+          close(socket_fd);
+          socket_fd = -1;
+          connected_.store(false);
+          clock_valid_.store(false);
+          disarm_request_.store(true);
+          last_sync_ns = 0;
+        }
+        continue;
+      }
       const uint64_t send_time_ns = monotonic_time_ns();
       if (send_time_ns < sample.acquisition_ns ||
           send_time_ns - sample.acquisition_ns > kMaxCommandAgeNs) {
@@ -327,6 +406,14 @@ class UsbTransport {
         continue;
       }
       if (!send_frame(socket_fd, sample.payload)) {
+        shutdown(socket_fd, SHUT_RDWR);
+        close(socket_fd);
+        socket_fd = -1;
+        connected_.store(false);
+        clock_valid_.store(false);
+        disarm_request_.store(true);
+        last_sync_ns = 0;
+      } else if (!receive_bridge_events(socket_fd)) {
         shutdown(socket_fd, SHUT_RDWR);
         close(socket_fd);
         socket_fd = -1;
@@ -347,6 +434,9 @@ class UsbTransport {
   mutable std::mutex mutex_;
   std::condition_variable condition_;
   std::vector<ControllerSample> pending_;
+  std::function<void(const std::string&)> recording_event_;
+  std::mutex recording_mutex_;
+  bool recording_state_known_{false}, recording_active_{false};
   std::atomic<bool> connected_{false};
   std::atomic<bool> clock_valid_{false};
   std::atomic<int64_t> offset_ns_{0};

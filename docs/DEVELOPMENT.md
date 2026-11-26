@@ -39,7 +39,7 @@ In the same container shell:
 ```bash
 export ROS_DOMAIN_ID=137 ROS_LOCALHOST_ONLY=1
 colcon test --base-paths src --executor sequential \
-  --packages-select quest_teleop recording teleop_controllers teleop_gripper teleop_bringup \
+  --packages-select cbf_safety_filter quest_teleop recording teleop_controllers teleop_gripper teleop_bringup \
   --event-handlers console_direct+ --return-code-on-test-failure
 colcon test-result --test-result-base build --verbose
 ```
@@ -58,8 +58,10 @@ For focused controller clipping and utility checks:
 build/teleop_controllers/test_local_utilities --gtest_color=no
 ```
 
-There is no CBF package to build. All launch files are installed by
-`teleop_bringup`; feature runtimes are independently linked. See
+The optional `cbf_safety_filter` package builds all three pinned native solvers;
+fetch them with `scripts/fetch_teleop_dependencies.sh` before building. Select
+the mock backend for software tests. All launch files are installed by `teleop_bringup`.
+Feature runtimes remain separate except the linked controller/CBF library. See
 [CONTROLLER_ARCHITECTURE.md](CONTROLLER_ARCHITECTURE.md).
 
 ## Keep formatting consistent
@@ -84,8 +86,7 @@ the report runtime remains MATLAB R2024b. Fix mode expands compressed statements
 and normalizes indentation and spacing. Check mode reports drift without edits.
 
 The script selects the seven maintained teleoperation packages, `scripts/` and
-`analysis/matlab/`. It excludes Android, third-party sources, legacy
-`panda_bringup`/`panda_demos`, generated build files and installed overlays.
+`analysis/matlab/`. It excludes Android, third-party sources, generated build files and installed overlays.
 Shell scripts use two-space indentation; check them with
 `for script in scripts/*.sh; do bash -n "$script"; done`.
 CMake and ROS interface definitions retain their package conventions.

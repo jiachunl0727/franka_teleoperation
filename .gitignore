@@ -14,3 +14,6 @@ src/third_party/osqp_0_6_3/
 # Generated Python bytecode from package builds and tests.
 __pycache__/
 *.py[cod]
+
+src/third_party/qpoases_3_2_1/
+src/third_party/piqp_0_6_3/

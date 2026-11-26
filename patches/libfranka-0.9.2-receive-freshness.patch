@@ -1,0 +1,178 @@
+--- /dev/null
++++ b/include/franka/control_timing.h
+@@ -0,0 +1,13 @@
++// Copyright (c) 2017 Franka Emika GmbH
++// Use of this source code is governed by the Apache-2.0 license, see LICENSE
++#pragma once
++#include <cstdint>
++namespace franka {
++// Local host diagnostics, never part of RobotState or the FCI wire protocol.
++struct HostControlTiming {
++  uint64_t update_start_ns{0}, receive_start_ns{0}, receive_end_ns{0}, update_end_ns{0};
++  uint64_t update_cpu_ns{0};
++  uint32_t received_states{0};
++  bool waited{false};
++};
++}  // namespace franka
+--- a/include/franka/robot.h
++++ b/include/franka/robot.h
+@@ -9,6 +9,7 @@
+ 
+ #include <franka/command_types.h>
+ #include <franka/control_types.h>
++#include <franka/control_timing.h>
+ #include <franka/duration.h>
+ #include <franka/lowpass_filter.h>
+ #include <franka/robot_state.h>
+@@ -69,6 +70,12 @@
+    */
+   using ServerVersion = uint16_t;
+ 
++  /** Local timing of the most recent update. Owner-thread observation only:
++   * call from this Robot's control callback, never concurrently from another
++   * thread. Does not lock, read the socket or change RobotState/protocol ABI.
++   */
++  HostControlTiming controlTiming() const noexcept;
++
+   /**
+    * Establishes a connection with the robot.
+    *
+--- a/src/robot_impl.h
++++ b/src/robot_impl.h
+@@ -33,6 +33,7 @@
+   void throwOnMotionError(const RobotState& robot_state, uint32_t motion_id) override;
+ 
+   RobotState readOnce();
++  HostControlTiming controlTiming() const noexcept { return host_timing_; }
+ 
+   void setStartupStateObserver(std::function<void(const RobotState&)> observer) {
+     startup_state_observer_ = std::move(observer);
+@@ -61,6 +62,7 @@
+   bool controllerRunning() const noexcept;
+ 
+  private:
++  HostControlTiming host_timing_{};
+   std::string commandNotPossibleMsg() const {
+     std::stringstream ss;
+     ss << " command rejected: command not possible in the current mode ("
+@@ -115,7 +117,7 @@
+   research_interface::robot::RobotCommand sendRobotCommand(
+       const research_interface::robot::MotionGeneratorCommand* motion_command,
+       const research_interface::robot::ControllerCommand* control_command) const;
+-  research_interface::robot::RobotState receiveRobotState();
++  research_interface::robot::RobotState receiveRobotState(HostControlTiming* timing = nullptr);
+   void updateState(const research_interface::robot::RobotState& robot_state);
+ 
+   std::unique_ptr<Network> network_;
+--- a/src/robot_impl.cpp
++++ b/src/robot_impl.cpp
+@@ -1,6 +1,7 @@
+ // Copyright (c) 2017 Franka Emika GmbH
+ // Use of this source code is governed by the Apache-2.0 license, see LICENSE
+ #include "robot_impl.h"
++#include <time.h>
+ 
+ #include <sstream>
+ 
+@@ -54,13 +55,31 @@
+ RobotState Robot::Impl::update(
+     const research_interface::robot::MotionGeneratorCommand* motion_command,
+     const research_interface::robot::ControllerCommand* control_command) {
++  const auto clock_ns = [] {
++    return std::chrono::duration_cast<std::chrono::nanoseconds>(
++        std::chrono::steady_clock::now().time_since_epoch()).count();
++  };
++  const auto cpu_ns = [] {
++    timespec t{};
++    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t);
++    return uint64_t(t.tv_sec)*1000000000ULL+t.tv_nsec;
++  };
++  HostControlTiming timing;
++  timing.update_start_ns = clock_ns();
++  const auto cpu_start = cpu_ns();
+   network_->tcpThrowIfConnectionClosed();
+ 
+   research_interface::robot::RobotCommand robot_command =
+       sendRobotCommand(motion_command, control_command);
+ 
+-  RobotState state = convertRobotState(receiveRobotState());
++  timing.receive_start_ns = clock_ns();
++  const auto received = receiveRobotState(&timing);
++  timing.receive_end_ns = clock_ns();
++  RobotState state = convertRobotState(received);
+   logger_.log(state, robot_command);
++  timing.update_cpu_ns = cpu_ns()-cpu_start;
++  timing.update_end_ns = clock_ns();
++  host_timing_ = timing;
+ 
+   return state;
+ }
+@@ -129,25 +148,45 @@
+   return robot_command;
+ }
+ 
+-research_interface::robot::RobotState Robot::Impl::receiveRobotState() {
++research_interface::robot::RobotState Robot::Impl::receiveRobotState(HostControlTiming* timing) {
+   research_interface::robot::RobotState latest_accepted_state;
+   latest_accepted_state.message_id = message_id_;
+ 
+-  // If states are already available on the socket, use the one with the most recent message ID.
+   research_interface::robot::RobotState received_state{};
+-  while (network_->udpReceive(&received_state)) {
++  const auto drain = [&] {
++    // Bound a burst/faulty sender instead of letting a continuously replenished
++    // queue prevent callback entry indefinitely. Never issue a command from a
++    // state selected out of an unbounded backlog.
++    unsigned count = 0;
++    while (count < 32 && network_->udpReceive(&received_state)) {
++      ++count;
++      if (timing) ++timing->received_states;
++      if (received_state.message_id > latest_accepted_state.message_id)
++        latest_accepted_state = received_state;
++    }
++    if (count == 32)
++      throw NetworkException("libfranka: excessive robot-state receive backlog");
++  };
++  drain();
++
++  // If there was no valid state on the socket, we need to wait.
++  const bool waited = latest_accepted_state.message_id == message_id_;
++  if (timing) timing->waited = waited;
++  unsigned blocking_received = 0;
++  while (latest_accepted_state.message_id == message_id_) {
++    received_state = network_->udpBlockingReceive<decltype(received_state)>();
++    if (++blocking_received == 32)
++      throw NetworkException("libfranka: excessive outdated robot-state receive backlog");
++    if (timing) ++timing->received_states;
+     if (received_state.message_id > latest_accepted_state.message_id) {
+       latest_accepted_state = received_state;
+     }
+   }
+-
+-  // If there was no valid state on the socket, we need to wait.
+-  while (latest_accepted_state.message_id == message_id_) {
+-    received_state = network_->udpBlockingReceive<decltype(received_state)>();
+-    if (received_state.message_id > latest_accepted_state.message_id) {
+-      latest_accepted_state = received_state;
+-    }
+-  }
++  // The receiver may have been descheduled after the blocking syscall, while
++  // newer states queued. Preserve real message IDs/periods; do not retimestamp
++  // the older packet or return it when a newer packet is already available.
++  if (waited)
++    drain();
+ 
+   updateState(latest_accepted_state);
+   return latest_accepted_state;
+--- a/src/robot.cpp
++++ b/src/robot.cpp
+@@ -9,6 +9,9 @@
+ #include "robot_impl.h"
+ 
+ namespace franka {
++HostControlTiming Robot::controlTiming() const noexcept {
++  return impl_->controlTiming();
++}
+ 
+ Robot::Robot(const std::string& franka_address, RealtimeConfig realtime_config, size_t log_size)
+     : impl_{new Robot::Impl(

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="35" failures="0" disabled="0" errors="0" time="0.007" timestamp="2026-11-12T15:58:33" name="AllTests">
+  <testsuite name="Manager" tests="30" failures="0" disabled="0" errors="0" time="0.003" timestamp="2026-11-12T15:58:33">
+    <testcase name="OrientationModeCapturesPositionAndSwitchesWithoutTriggerRelease" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="ReleaseIsRequiredAndNominalLawIsPreserved" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="SmallPoseWithImplausibleVelocityCannotDriveTheArm" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="StaleTargetIsRemovedAndPacketsCannotResume" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="FaultDisarmIsNeverARelease" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="SessionReferenceOrderingAndClockFaultsRequireRelease" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="ReleaseRepeatsDoNotRefreshSourceAge" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="OuterEnvelopeAndNonFiniteTargetsDisarm" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="CoriolisConventionIsPreservedButInvalidActuatorIntersectionIsFatal" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="QuaternionSignDoesNotChangeTorque" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="ParametersRejectUnapprovedCeilingChangesAndNaNs" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="OverflowSizedFiniteVelocityIsRejectedBeforeComputingNominal" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="ReportsSpecificFatalCauseWithoutRelaxingChecks" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="InjectedLawRunsOnlyWhenArmedAndResetsOnActivation" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="HomingOwnsNominalUntilControlledStopAndRequiresFreshReengagement" status="run" result="completed" time="0.001" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="InvalidLawResultAndZeroPeriodTerminateBeforeSafetyHandoff" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="ReleaseCapturesMeasuredJointsOnceAndHoldsTheUnobservedSeventhJoint" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="InputFaultsPreserveTheHoldAndFreshReleaseCannotRecaptureIt" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="HoldingRecapturesAfterTeleoperationAndReturnsItsOwnership" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="StartupHoldSurvivesMissingInvalidAndStaleQuestInputWithoutFollowingDrift" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="StartupSessionAndQueueFaultsCannotMoveTheLocalHoldAnchor" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="PausedHoldSurvivesTrackingFaultAndStalenessWithoutRecapture" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="ReferenceSpeedAccelerationAndTwistStayCoherentAcrossReversals" status="run" result="completed" time="0.001" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="ImmobilePlantCannotWindUpAReferenceWithoutLimit" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="OptionalLimitsDefaultOffAndMappedReferencePassesThrough" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="TrackingProtectionCanBeEnabledWithoutReferenceShaping" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="OptionalReferenceProjectionKeepsBoundarySlidingAndRetreatConnected" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="BlockedInputDoesNotAccumulateAndSmallRetreatWorksWithEitherShapingMode" status="run" result="completed" time="0.001" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="RotationalBoundaryHoldsAcceptedOrientationAndAllowsSmallReversal" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+    <testcase name="FreshSafetyHoldKeepsPoseWithoutDisarmingOrResettingTheLaw" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Manager" />
+  </testsuite>
+  <testsuite name="Handoff" tests="2" failures="0" disabled="0" errors="0" time="0.003" timestamp="2026-11-12T15:58:33">
+    <testcase name="QueueIsBoundedAndPreservesOrder" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Handoff" />
+    <testcase name="ConcurrentSamplesRemainAtomic" status="run" result="completed" time="0.003" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.Handoff" />
+  </testsuite>
+  <testsuite name="TorqueController" tests="1" failures="0" disabled="0" errors="0" time="0" timestamp="2026-11-12T15:58:33">
+    <testcase name="IncompatibleReferenceIsAnExplicitFault" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.TorqueController" />
+  </testsuite>
+  <testsuite name="PositionHold" tests="2" failures="0" disabled="0" errors="0" time="0.001" timestamp="2026-11-12T15:58:33">
+    <testcase name="StiffnessRampsAndJointDampingAndCoriolisArePreserved" status="run" result="completed" time="0.001" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.PositionHold" />
+    <testcase name="InvalidParametersAndReferencesAreRejected" status="run" result="completed" time="0" timestamp="2026-11-12T15:58:33" classname="teleop_controllers.PositionHold" />
+  </testsuite>
+</testsuites>

@@ -23,7 +23,10 @@ def test_feature_runtimes_have_no_functional_project_dependencies():
     for feature in features:
         package = ET.parse(source / feature / "package.xml").getroot()
         for tag in ("depend", "exec_depend", "build_depend", "build_export_depend"):
-            assert not {node.text for node in package.findall(tag)} & forbidden, feature
+            dependencies = {node.text for node in package.findall(tag)}
+            assert not dependencies & forbidden, feature
+            if feature != "teleop_controllers":
+                assert "cbf_safety_filter" not in dependencies, feature
         for path in (source / feature).rglob("*.py"):
             if "test" in path.parts or "__pycache__" in path.parts:
                 continue
@@ -36,9 +39,11 @@ def test_feature_runtimes_have_no_functional_project_dependencies():
         ):
             assert '"safety_filter/' not in path.read_text(), path
     assert (
-        "safety_filter"
+        "find_package(safety_filter "
         not in (source / "teleop_controllers" / "CMakeLists.txt").read_text()
     )
+    cbf = ET.parse(source / "cbf_safety_filter" / "package.xml").getroot()
+    assert not {n.text for n in cbf.findall("depend")} & (features | {"teleop_bringup"})
 
 
 def test_mock_arms_clip_torque_independently_inside_controller_runtime():
@@ -51,7 +56,7 @@ def test_mock_arms_clip_torque_independently_inside_controller_runtime():
         "ros2",
         "run",
         "teleop_controllers",
-        "cartesian_impedance_controller",
+        "cartesian_pd_controller",
         "--ros-args",
         "-p",
         "backend:=mock",
@@ -67,6 +72,9 @@ def test_mock_arms_clip_torque_independently_inside_controller_runtime():
             CartesianTeleopCommand, ns + "/cartesian_teleop_command", 10
         )
         for key, value in {
+            "cartesian_control_law": (
+                "inverse_dynamics" if side == "left" else "cartesian_pd"
+            ),
             "namespace": ns,
             "base_frame": ns[1:] + "/base",
             "reference_shaping_enabled": "true" if side == "left" else "false",

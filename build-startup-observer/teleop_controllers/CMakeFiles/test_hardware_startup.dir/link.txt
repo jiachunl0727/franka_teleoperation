@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/test_hardware_startup.dir/test/test_hardware_startup.cpp.o -o test_hardware_startup  -Wl,-rpath,/ws/install/libfranka/lib gtest/libgtest_main.a gtest/libgtest.a /ws/install/libfranka/lib/libfranka.so.0.9.2 libcontroller_manager.a -pthread /usr/lib/x86_64-linux-gnu/libtinyxml2.so 

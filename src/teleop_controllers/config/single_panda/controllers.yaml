@@ -1,0 +1,56 @@
+# Torque law, hold and homing tuning. Joint vectors follow Panda joint order.
+controller:
+  # Cartesian PD task and nullspace posture
+  lambda_translation: 15.0
+  lambda_rotation: 15.0
+  gain_translation: 50.0
+  gain_rotation: 5.0
+  nullspace_stiffness: 10.0
+  nullspace_damping: 6.324555320336759
+  nullspace_joint_limit_gain: 2.0
+  nullspace_joint_limit_margin: 0.35
+  nullspace_max_torque: 5.0
+  nullspace_ramp_seconds: 0.25
+
+  # Inverse dynamics
+  inverse_dynamics_stiffness: [750.0, 750.0, 750.0, 75.0, 75.0, 75.0]
+  inverse_dynamics_damping_ratio: 1.0
+  inverse_dynamics_nullspace_stiffness: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
+  inverse_dynamics_nullspace_damping: [6.324555320336759, 6.324555320336759, 6.324555320336759, 6.324555320336759, 6.324555320336759, 6.324555320336759,
+    6.324555320336759]
+
+  # Joint position hold
+  hold_stiffness: [600.0, 600.0, 600.0, 600.0, 250.0, 150.0, 75.0]
+  hold_damping: [50.0, 50.0, 50.0, 50.0, 20.0, 15.0, 10.0]
+  hold_stiffness_ramp_seconds: 0.25
+
+  # Homing trajectory and controlled stop
+  homing_speed_factor: 0.15
+  homing_timeout_seconds: 30.0
+  homing_stiffness: [300.0, 300.0, 300.0, 300.0, 120.0, 100.0, 50.0]
+  homing_damping: [30.0, 30.0, 30.0, 30.0, 10.0, 10.0, 5.0]
+  homing_stop_duration_seconds: 0.5
+  homing_stop_acceleration: 0.75
+  homing_stop_timeout_seconds: 5.0
+
+  # Reference shaping
+  reference_shaping_enabled: false
+  reference_linear_speed: 0.05
+  reference_angular_speed: 0.15
+  reference_linear_acceleration: 0.15
+  reference_angular_acceleration: 0.5
+
+  # Tracking-error protection
+  tracking_protection_enabled: false
+  tracking_position_limit: 0.03
+  tracking_orientation_limit: 0.2
+
+  # Cartesian wrench limits
+  cartesian_wrench_limits_enabled: false
+  cartesian_force_limit: 10.0
+  cartesian_moment_limit: 1.5
+
+  # Joint torque and slew-rate ceilings
+  torque_limits: [87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0]
+  maximum_torque_rate: 900.0
+

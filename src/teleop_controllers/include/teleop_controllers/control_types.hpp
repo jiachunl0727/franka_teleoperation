@@ -39,14 +39,14 @@ enum class Reason : uint8_t {
   stale,
   order,
   session_change,
-  envelope,
   queue_overflow,
   invalid_state,
   shutdown,
   homing,
   position_hold,
   tracking_limit,
-  input_velocity_limit
+  input_velocity_limit,
+  cbf_failure
 };
 const char* reason_name(Reason reason) noexcept;
 
@@ -57,7 +57,8 @@ enum class StateFault : uint8_t {
   period,
   nonfinite_nominal,
   actuator_interval,
-  invalid_reference
+  invalid_reference,
+  singular_task
 };
 const char* state_fault_name(StateFault fault) noexcept;
 

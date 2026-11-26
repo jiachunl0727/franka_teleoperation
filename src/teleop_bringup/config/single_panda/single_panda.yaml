@@ -1,0 +1,46 @@
+# Combined runtime. Profile settings are loaded first, then local and per-arm overrides.
+# The hardware backend opens the configured connections. Hand startup performs calibration.
+pipeline:
+  mode: single  # Choices: single, dual.
+  single_controller: right  # Choices: left, right. Used in single mode.
+  backend: hardware  # Choices: mock, hardware.
+  start_bridge: true
+  start_mapper: true
+  start_controller: true
+  start_hand: true
+  homing_enabled: true
+  recording_enabled: true
+quest:
+  config_file: package://quest_teleop/config/single_panda/quest.yaml
+  bridge:
+    listen_port: 45454
+arms:
+  panda_1:
+    robot_ip: 192.168.3.109
+    namespace: /panda_1
+    base_frame: panda_1/panda_link0
+    reference_to_robot_xyzw: [0.5, 0.5, 0.5, 0.5]
+    translation_scale: 0.75
+    rotation_scale: 0.33
+controller:
+  config_file: package://teleop_controllers/config/single_panda/controllers.yaml
+  dynamics_model_file: package://teleop_controllers/config/panda_umi.urdf
+  cartesian_control_law: cartesian_pd  # Choices: cartesian_pd, inverse_dynamics.
+  torque_limit_scale: 0.35
+  torque_rate_limit_scale: 0.35
+  home_joint_position: [0.0, -0.7854, 0.0, -2.3562, 0.0, 1.5708, 0.7854]
+hand:
+  config_file: package://teleop_gripper/config/single_panda/gripper.yaml
+  cable_diameter_m: 0.01
+  cable_diameter_tolerance_m: 0.0099
+  grasp_force_n: 30.0
+cbf:
+  enabled: true
+  config_file: package://cbf_safety_filter/config/single_panda/cbf.yaml
+  hardware_mode: filtered  # Choices: shadow, filtered. Required if enabled on hardware.
+recording:
+  config_file: package://recording/config/single_panda/recording.yaml
+  mode: menu  # Choices: menu, continuous.
+  include_default_topics: true
+  topics: []
+  output_root: /ws/log/quest_bags

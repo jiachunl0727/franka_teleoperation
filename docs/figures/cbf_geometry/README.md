@@ -1,20 +1,16 @@
 # Exact CBF capsule and bounding-box placement
 
+**Historical figure:** this predates the current UMI attachment and CBF layout.
+Use the [interactive collision viewer](../collision_model/viewer.html)
+for the current dual-arm geometry. The placement data below describes the older model.
+
 Generated from the current C++ initializer and the pinned Panda URDF/Xacro.
 All 14 capsule definitions were checked against the URDF cylinder/sphere
 collision primitives at `safety_distance=0` before rendering.
 
-## Figures
-
-![URDF meshes, CBF capsules and centerline AABBs](cbf_geometry_home.png)
-
-![Stored boxes and wrist placement details](cbf_geometry_boxes.png)
-
-PDF exports: [overview](cbf_geometry_home.pdf), [details](cbf_geometry_boxes.pdf).
-
 ## Posture and coordinate convention
 
-- Common home joints from `teleop_bringup/config/single_panda.yaml`:
+- Common home joints from `teleop_bringup/config/single_panda/single_panda.yaml`:
   `[0, -0.7854, 0, -2.3562, 0, 1.5708, 0.7854]` rad.
 - The illustration world is the robot base frame (identity base transform).
   Joint poses come from the pinned URDF; this is not a live robot snapshot.

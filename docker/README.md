@@ -32,10 +32,8 @@ ROS builds use `--base-paths src` to restrict discovery to ROS sources.
 `android/COLCON_IGNORE` also excludes the Android project from default colcon
 discovery; build the APK with the separate Gradle/NDK container below.
 
-Colcon orders the active packages' libfranka dependency automatically. If you
-also need the entire legacy workspace, build and source libfranka first; the
-legacy `panda_bringup` manifest omits that dependency. Legacy demos are not
-needed for teleoperation. The standard overlay is `/ws/install/setup.bash`.
+Colcon orders the active packages' libfranka dependency automatically. The
+standard overlay is `/ws/install/setup.bash`.
 
 There is no workspace patch to apply. Use this container for development and fake hardware. For first physical-robot
 bring-up, boot the host into its PREEMPT_RT kernel. Docker shares the host kernel and

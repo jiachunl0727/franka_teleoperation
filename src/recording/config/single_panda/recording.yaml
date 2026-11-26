@@ -1,0 +1,3 @@
+# Recording defaults shared by the combined and standalone readers.
+menu_debounce_seconds: 0.35
+storage_id: sqlite3  # Menu: sqlite3 only. Continuous: any installed rosbag2 storage plugin ID.

@@ -62,14 +62,14 @@ def setup(context):
 def generate_launch_description():
     defaults = dict(
         arms_config=str(
-            Path(get_package_share_directory("teleop_bringup")) / "config/arms.yaml"
+            Path(get_package_share_directory("teleop_bringup")) / "config/single_panda/arms.yaml"
         ),
         start_bridge="false",
         listen_port="45454",
         mock_measured_pose="false",
         recording_enabled="false",
         recording_config=str(
-            Path(get_package_share_directory("recording")) / "config/recording.yaml"
+            Path(get_package_share_directory("recording")) / "config/standalone.yaml"
         ),
         recording_topics="",
         recording_output_root="",
